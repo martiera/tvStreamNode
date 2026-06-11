@@ -11,6 +11,7 @@ import android.view.ViewGroup
 import android.widget.FrameLayout
 import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.TextView
 import androidx.fragment.app.Fragment
 import androidx.lifecycle.ViewModelProvider
@@ -23,9 +24,11 @@ import java.util.Locale
 class EpgGridFragment : Fragment() {
 
     private lateinit var viewModel: EpgGridViewModel
-    private lateinit var scrollView: HorizontalScrollView
+    private lateinit var verticalScroll: ScrollView
+    private lateinit var horizontalScroll: HorizontalScrollView
     private lateinit var rowsContainer: LinearLayout
     private lateinit var channelColumn: LinearLayout
+    private lateinit var root: FrameLayout
 
     companion object {
         private const val HALF_HOUR_WIDTH_DP = 300
@@ -46,7 +49,7 @@ class EpgGridFragment : Fragment() {
         val colW = (CHANNEL_COL_WIDTH_DP * density).toInt()
         val headerH = (HEADER_HEIGHT_DP * density).toInt()
 
-        val root = FrameLayout(requireContext()).apply {
+        root = FrameLayout(requireContext()).apply {
             layoutParams = ViewGroup.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT
@@ -54,8 +57,8 @@ class EpgGridFragment : Fragment() {
             setBackgroundColor(Color.parseColor("#121212"))
         }
 
-        // Scrollable grid (right side)
-        scrollView = HorizontalScrollView(requireContext()).apply {
+        // Vertical scroll (channels)
+        verticalScroll = ScrollView(requireContext()).apply {
             layoutParams = FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT
@@ -63,25 +66,49 @@ class EpgGridFragment : Fragment() {
             isFillViewport = true
             isFocusable = true
 
-            rowsContainer = LinearLayout(requireContext()).apply {
-                orientation = LinearLayout.VERTICAL
+            val hLayout = LinearLayout(requireContext()).apply {
+                orientation = LinearLayout.HORIZONTAL
+                layoutParams = ViewGroup.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+                )
             }
-            addView(rowsContainer)
-        }
-        root.addView(scrollView)
 
-        // Fixed channel column (left overlay, does NOT scroll horizontally)
-        channelColumn = LinearLayout(requireContext()).apply {
-            orientation = LinearLayout.VERTICAL
-            layoutParams = FrameLayout.LayoutParams(colW, ViewGroup.LayoutParams.MATCH_PARENT)
-            elevation = 6f
-            setBackgroundColor(Color.parseColor("#2C3E50"))
+            // Fixed channel column
+            channelColumn = LinearLayout(requireContext()).apply {
+                orientation = LinearLayout.VERTICAL
+                layoutParams = LinearLayout.LayoutParams(colW, ViewGroup.LayoutParams.WRAP_CONTENT)
+                setBackgroundColor(Color.parseColor("#2C3E50"))
+            }
+            channelColumn.addView(View(requireContext()).apply {
+                layoutParams = LinearLayout.LayoutParams(colW, headerH)
+                setBackgroundColor(Color.parseColor("#243342"))
+            })
+            hLayout.addView(channelColumn)
+
+            // Horizontal scroll (time grid)
+            horizontalScroll = HorizontalScrollView(requireContext()).apply {
+                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                isFillViewport = true
+                isFocusable = true
+
+                rowsContainer = LinearLayout(requireContext()).apply {
+                    orientation = LinearLayout.VERTICAL
+                }
+                addView(rowsContainer)
+            }
+            hLayout.addView(horizontalScroll)
+            addView(hLayout)
         }
-        channelColumn.addView(View(requireContext()).apply {
-            layoutParams = LinearLayout.LayoutParams(colW, headerH)
-            setBackgroundColor(Color.parseColor("#243342"))
-        })
-        root.addView(channelColumn)
+        root.addView(verticalScroll)
+
+        // Current time indicator (overlay in root FrameLayout)
+        val nowIndicator = View(requireContext()).apply {
+            setBackgroundColor(Color.parseColor("#FF5252"))
+            id = View.generateViewId()
+            layoutParams = FrameLayout.LayoutParams(2, ViewGroup.LayoutParams.MATCH_PARENT)
+        }
+        root.addView(nowIndicator)
 
         root.isFocusable = true
         root.setOnKeyListener { _, keyCode, event ->
@@ -95,7 +122,7 @@ class EpgGridFragment : Fragment() {
 
         viewModel.state.observe(viewLifecycleOwner) { state ->
             if (!state.isLoading) {
-                buildGrid(state.channels, state.events)
+                buildGrid(state.channels, state.events, nowIndicator)
             }
         }
 
@@ -103,9 +130,9 @@ class EpgGridFragment : Fragment() {
         return root
     }
 
-    private fun buildGrid(channels: List<Channel>, events: List<EpgEvent>) {
+    private fun buildGrid(channels: List<Channel>, events: List<EpgEvent>, nowIndicator: View) {
         try {
-            buildGridSafe(channels, events)
+            buildGridSafe(channels, events, nowIndicator)
         } catch (e: Exception) {
             rowsContainer.removeAllViews()
             rowsContainer.addView(TextView(requireContext()).apply {
@@ -117,7 +144,7 @@ class EpgGridFragment : Fragment() {
         }
     }
 
-    private fun buildGridSafe(channels: List<Channel>, events: List<EpgEvent>) {
+    private fun buildGridSafe(channels: List<Channel>, events: List<EpgEvent>, nowIndicator: View) {
         rowsContainer.removeAllViews()
         channelColumn.removeViews(1, channelColumn.childCount - 1)
 
@@ -172,10 +199,30 @@ class EpgGridFragment : Fragment() {
             layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 1)
         })
 
+        val nowIndicatorX = colW + ((now - rangeStart) * totalWidth / totalSeconds).toInt()
+
+        val focusBg = GradientDrawable().apply {
+            setColor(Color.parseColor("#33FFFFFF"))
+            cornerRadius = 0f
+        }
+
         // ── Channel rows ──
-        for (channel in channels) {
+        for ((index, channel) in channels.withIndex()) {
             val channelEvents = eventsByChannel[channel.uuid] ?: emptyList()
             val row = buildChannelRow(channel, channelEvents, colW, totalWidth, rowH, rangeStart, totalSeconds)
+
+            row.onFocusChangeListener = null
+            row.setOnFocusChangeListener { _, hasFocus ->
+                val colLabel = channelColumn.getChildAt(index + 1)
+                if (hasFocus) {
+                    row.background = focusBg
+                    colLabel?.setBackgroundColor(Color.parseColor("#3D5A80"))
+                } else {
+                    row.background = null
+                    colLabel?.setBackgroundColor(Color.TRANSPARENT)
+                }
+            }
+
             rowsContainer.addView(row)
             rowsContainer.addView(View(requireContext()).apply {
                 setBackgroundColor(Color.parseColor("#2A2A2A"))
@@ -183,12 +230,23 @@ class EpgGridFragment : Fragment() {
             })
         }
 
+        // Auto-focus first row
+        rowsContainer.post {
+            if (rowsContainer.childCount > 1) {
+                rowsContainer.getChildAt(1).requestFocus()
+            }
+        }
+
+        // Position now indicator
+        val lp = nowIndicator.layoutParams as FrameLayout.LayoutParams
+        lp.leftMargin = nowIndicatorX
+        nowIndicator.layoutParams = lp
+        nowIndicator.bringToFront()
+
         // Scroll to current time
-        val nowIndicatorX = colW + ((now - rangeStart) * totalWidth / totalSeconds).toInt()
-        scrollView.post {
-            val scrollTo = maxOf(nowIndicatorX - scrollView.width / 4, colW)
-            scrollView.scrollTo(scrollTo, 0)
-            scrollView.requestFocus()
+        horizontalScroll.post {
+            val scrollTo = maxOf(nowIndicatorX - horizontalScroll.width / 4, colW)
+            horizontalScroll.scrollTo(scrollTo, 0)
         }
     }
 

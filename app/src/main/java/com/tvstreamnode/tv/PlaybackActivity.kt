@@ -11,6 +11,7 @@ import androidx.media3.exoplayer.hls.HlsMediaSource
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import androidx.media3.ui.PlayerView
 import com.tvstreamnode.tv.util.Preferences
+import okhttp3.Credentials
 
 class PlaybackActivity : androidx.fragment.app.FragmentActivity() {
 
@@ -39,8 +40,11 @@ class PlaybackActivity : androidx.fragment.app.FragmentActivity() {
         val tsUrl = "$baseUrl/stream/channel/$channelUuid"
         val hlsUrl = "$baseUrl/stream/channel/$channelUuid/hls"
 
+        val authHeader = Credentials.basic(prefs.username, prefs.password)
+
         val dataSourceFactory = DefaultHttpDataSource.Factory()
             .setAllowCrossProtocolRedirects(true)
+            .setDefaultRequestProperties(mapOf("Authorization" to authHeader))
 
         player = ExoPlayer.Builder(this).build().apply {
             playWhenReady = true
@@ -55,7 +59,6 @@ class PlaybackActivity : androidx.fragment.app.FragmentActivity() {
                 override fun onPlayerError(error: PlaybackException) {
                     if (!fallbackTried) {
                         fallbackTried = true
-                        // Try HLS as fallback (some servers have it configured)
                         val hlsSource = HlsMediaSource.Factory(dataSourceFactory)
                             .createMediaSource(MediaItem.fromUri(hlsUrl))
                         setMediaSource(hlsSource, true)
@@ -65,7 +68,6 @@ class PlaybackActivity : androidx.fragment.app.FragmentActivity() {
                 }
             })
 
-            // Default: raw MPEG-TS (video/mp2t) — all Tvheadend servers support this
             val tsSource = ProgressiveMediaSource.Factory(dataSourceFactory)
                 .createMediaSource(MediaItem.fromUri(tsUrl))
             setMediaSource(tsSource)
