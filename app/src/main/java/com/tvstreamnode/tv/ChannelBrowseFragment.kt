@@ -8,6 +8,7 @@ import android.view.Gravity
 import android.view.KeyEvent
 import android.view.View
 import android.view.ViewGroup
+import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.fragment.app.Fragment
@@ -17,6 +18,7 @@ import androidx.leanback.widget.ItemBridgeAdapter
 import androidx.lifecycle.ViewModelProvider
 import com.tvstreamnode.tv.data.model.Channel
 import com.tvstreamnode.tv.data.model.EpgEvent
+import com.tvstreamnode.tv.util.Preferences
 
 class ChannelBrowseFragment : Fragment() {
 
@@ -75,7 +77,7 @@ class ChannelBrowseFragment : Fragment() {
             layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 1)
         })
 
-        // ── Horizontal card grid ──
+        // ── Horizontal card grid (centered vertically) ──
         cardPresenter = ChannelCardPresenter()
         cardPresenter.onClickListener = { channel, event ->
             startActivity(Intent(requireContext(), PlaybackActivity::class.java).apply {
@@ -86,7 +88,7 @@ class ChannelBrowseFragment : Fragment() {
         }
 
         horizontalGrid = HorizontalGridView(requireContext()).apply {
-            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+            layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
             setNumRows(1)
             setRowHeight(ViewGroup.LayoutParams.WRAP_CONTENT)
             setItemSpacing((8 * resources.displayMetrics.density).toInt())
@@ -98,7 +100,16 @@ class ChannelBrowseFragment : Fragment() {
                 } else false
             }
         }
-        root.addView(horizontalGrid)
+
+        val centerWrapper = FrameLayout(requireContext()).apply {
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f)
+            horizontalGrid.layoutParams = FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { gravity = Gravity.CENTER_VERTICAL }
+            addView(horizontalGrid)
+        }
+        root.addView(centerWrapper)
 
         root.setOnKeyListener { _, keyCode, event ->
             if (event.action == KeyEvent.ACTION_DOWN && keyCode == KeyEvent.KEYCODE_MENU) {
@@ -145,15 +156,29 @@ class ChannelBrowseFragment : Fragment() {
             val focusIndex = if (selectIndex >= 0) selectIndex else 0
             if (adapter.size() > 0) {
                 horizontalGrid.setSelectedPosition(focusIndex)
-                val item = adapter.get(focusIndex)
-                if (item is Pair<*, *>) {
-                    val channel = item.first as? Channel
-                    val event = item.second as? EpgEvent
-                    val detailText = event?.title ?: "Navigate to a program"
-                    // Simple header update
-                    headerView.text = "‹  ${channel?.name ?: "All Channels"} — $detailText"
-                }
+                val vh = horizontalGrid.findViewHolderForAdapterPosition(focusIndex)
+                if (vh != null) vh.itemView.requestFocus()
+                else horizontalGrid.requestFocus()
             }
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        reFocusOnLastChannel()
+    }
+
+    private fun reFocusOnLastChannel() {
+        if (channels.isEmpty() || !::horizontalGrid.isInitialized) return
+        val uuid = Preferences(requireContext()).lastChannelUuid
+        if (uuid.isEmpty()) return
+        val index = channels.indexOfFirst { it.uuid == uuid }
+        if (index < 0) return
+        horizontalGrid.post {
+            horizontalGrid.setSelectedPosition(index)
+            val vh = horizontalGrid.findViewHolderForAdapterPosition(index)
+            if (vh != null) vh.itemView.requestFocus()
+            else horizontalGrid.requestFocus()
         }
     }
 }

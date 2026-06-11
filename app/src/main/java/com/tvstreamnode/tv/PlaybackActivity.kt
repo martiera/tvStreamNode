@@ -1,6 +1,5 @@
 package com.tvstreamnode.tv
 
-import android.app.AlertDialog
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
@@ -16,7 +15,6 @@ import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.lifecycle.lifecycleScope
-import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.common.PlaybackException
@@ -51,15 +49,16 @@ class PlaybackActivity : androidx.fragment.app.FragmentActivity() {
 
     private var channels: List<Channel> = emptyList()
     private var currentChannelIndex: Int = -1
-    private var currentEvents: List<EpgEvent> = emptyList()
 
     // Overlay views
     private lateinit var overlay: LinearLayout
+    private lateinit var channelBar: TextView
     private lateinit var overlayTitle: TextView
+    private lateinit var descriptionText: TextView
     private lateinit var progressFill: View
     private lateinit var progressBg: View
+    private lateinit var progressContainer: FrameLayout
     private lateinit var overlayChannelTime: TextView
-    private lateinit var overlayNext: TextView
 
     private val handler = Handler(Looper.getMainLooper())
     private var hidePending = false
@@ -89,7 +88,7 @@ class PlaybackActivity : androidx.fragment.app.FragmentActivity() {
 
         playerView = PlayerView(this).apply {
             keepScreenOn = true
-            useController = true
+            useController = false
             layoutParams = FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT
@@ -101,7 +100,6 @@ class PlaybackActivity : androidx.fragment.app.FragmentActivity() {
         overlay = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             visibility = View.GONE
-            setPadding(32, 20, 32, 24)
             val bg = GradientDrawable().apply {
                 setColor(Color.parseColor("#DD000000"))
                 cornerRadii = floatArrayOf(16f, 16f, 16f, 16f, 0f, 0f, 0f, 0f)
@@ -113,17 +111,38 @@ class PlaybackActivity : androidx.fragment.app.FragmentActivity() {
             ).apply { gravity = Gravity.BOTTOM }
         }
 
+        channelBar = TextView(this).apply {
+            textSize = 26f
+            setTextColor(Color.WHITE)
+            setTypeface(null, android.graphics.Typeface.BOLD)
+            setPadding(20, 12, 20, 12)
+            setBackgroundColor(Color.parseColor("#66000000"))
+            maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.END
+        }
+        overlay.addView(channelBar)
+
         overlayTitle = TextView(this).apply {
-            textSize = 20f
+            textSize = 22f
             setTextColor(Color.WHITE)
             setTypeface(null, android.graphics.Typeface.BOLD)
             maxLines = 2
             ellipsize = android.text.TextUtils.TruncateAt.END
+            setPadding(20, 12, 20, 0)
         }
         overlay.addView(overlayTitle)
 
+        descriptionText = TextView(this).apply {
+            textSize = 18f
+            setTextColor(Color.parseColor("#BBBBBB"))
+            maxLines = 3
+            ellipsize = android.text.TextUtils.TruncateAt.END
+            setPadding(20, 6, 20, 0)
+        }
+        overlay.addView(descriptionText)
+
         // Progress bar
-        val progressContainer = FrameLayout(this@PlaybackActivity).apply {
+        progressContainer = FrameLayout(this@PlaybackActivity).apply {
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 (8 * resources.displayMetrics.density).toInt()
@@ -152,14 +171,6 @@ class PlaybackActivity : androidx.fragment.app.FragmentActivity() {
             maxLines = 1
         }
         overlay.addView(overlayChannelTime)
-
-        overlayNext = TextView(this).apply {
-            textSize = 13f
-            setTextColor(Color.parseColor("#999999"))
-            maxLines = 2
-            ellipsize = android.text.TextUtils.TruncateAt.END
-        }
-        overlay.addView(overlayNext)
         root.addView(overlay)
 
         setContentView(root)
@@ -196,12 +207,11 @@ class PlaybackActivity : androidx.fragment.app.FragmentActivity() {
             channels = chResult.getOrNull() ?: emptyList()
             currentChannelIndex = channels.indexOfFirst { it.uuid == channelUuid }
 
-            // Pre-load global EPG cache for instant overlay on channel switch
+            // Pre-load current EPG (mode=now) for instant overlay on channel switch
             if (!EpgCache.isValid()) {
                 withContext(Dispatchers.IO) {
                     try {
-                        val nowSec = System.currentTimeMillis() / 1000
-                        val result = EpgRepository(api).getEpgInRange(nowSec - 3600, nowSec + 7200, 3000)
+                        val result = EpgRepository(api).getCurrentEvents()
                         result.getOrNull()?.let { EpgCache.put(it) }
                     } catch (_: Exception) { }
                 }
@@ -242,58 +252,40 @@ class PlaybackActivity : androidx.fragment.app.FragmentActivity() {
     private var currentIndex: Int = -1
 
     private fun showOverlay(channelUuid: String) {
-        currentEvents = EpgCache.get(channelUuid)
-        val ev = currentEvents.firstOrNull { event ->
-            val now = System.currentTimeMillis() / 1000
-            event.start <= now && event.stop > now
-        }
-        val nextEv = currentEvents.firstOrNull { event ->
-            val now = System.currentTimeMillis() / 1000
-            event.start > now
-        }
-
+        val ev = EpgCache.get(channelUuid)
         val ch = currentChannel
-        if (ch != null) {
-            overlayTitle.text = ch.name ?: ""
-        }
-
         val sdf = SimpleDateFormat("HH:mm", Locale.getDefault())
+
+        channelBar.text = ch?.name ?: ""
 
         if (ev != null) {
             overlayTitle.text = ev.title ?: ch?.name ?: ""
+            descriptionText.text = ev.description ?: ev.subtitle ?: ""
+            descriptionText.visibility = View.VISIBLE
+            progressContainer.visibility = View.VISIBLE
+            overlayChannelTime.visibility = View.VISIBLE
 
             val now = System.currentTimeMillis() / 1000
             val elapsed = (now - ev.start).toFloat()
             val total = (ev.stop - ev.start).toFloat()
             val pct = (elapsed / total * 100).coerceIn(0f, 100f)
-
-            progressFill.post {
-                val pw = (progressBg.width * pct / 100).toInt().coerceAtLeast(0)
-                val lp = progressFill.layoutParams
-                if (lp is ViewGroup.MarginLayoutParams) lp.width = pw
-                progressFill.layoutParams = lp
-            }
-
             val remaining = total - elapsed
 
-            val timeStr = "${sdf.format(Date(ev.start * 1000))}–${sdf.format(Date(ev.stop * 1000))}"
-            val remainStr = if (remaining > 60) "${(remaining / 60).toInt()} min remaining" else "Ending soon"
-            overlayChannelTime.text = "${ch?.name ?: ""} · $timeStr · $remainStr"
-        } else {
-            overlayTitle.text = ch?.name ?: ""
             progressFill.post {
+                val parentW = (progressFill.parent as View).width
                 val lp = progressFill.layoutParams
-                if (lp is ViewGroup.MarginLayoutParams) lp.width = 0
+                if (lp is ViewGroup.MarginLayoutParams) lp.width = (parentW * pct / 100).toInt().coerceAtLeast(0)
                 progressFill.layoutParams = lp
             }
-            overlayChannelTime.text = ch?.name ?: ""
-        }
 
-        if (nextEv != null) {
-            overlayNext.text = "→ ${nextEv.title} at ${sdf.format(Date(nextEv.start * 1000))}"
-            overlayNext.visibility = View.VISIBLE
+            val timeStr = "${sdf.format(Date(ev.start * 1000))} – ${sdf.format(Date(ev.stop * 1000))}"
+            val remainStr = if (remaining > 60) "${(remaining / 60).toInt()} min remaining" else "Ending soon"
+            overlayChannelTime.text = "$timeStr  ·  $remainStr"
         } else {
-            overlayNext.visibility = View.GONE
+            overlayTitle.text = "No TV program information"
+            descriptionText.visibility = View.GONE
+            progressContainer.visibility = View.GONE
+            overlayChannelTime.visibility = View.GONE
         }
 
         // Fade in overlay
@@ -304,7 +296,7 @@ class PlaybackActivity : androidx.fragment.app.FragmentActivity() {
 
         // Reset auto-hide timer
         handler.removeCallbacks(hideRunnable)
-        handler.postDelayed(hideRunnable, 5000L)
+        handler.postDelayed(hideRunnable, 8000L)
         hidePending = true
     }
 
@@ -324,11 +316,22 @@ class PlaybackActivity : androidx.fragment.app.FragmentActivity() {
 
     private val hideRunnable = Runnable { hideOverlay() }
 
+    override fun dispatchKeyEvent(event: KeyEvent?): Boolean {
+        if (event?.action == KeyEvent.ACTION_DOWN && event.keyCode == KeyEvent.KEYCODE_DPAD_CENTER) {
+            showOverlay(currentChannel?.uuid ?: return true)
+            handler.removeCallbacks(hideRunnable)
+            handler.postDelayed(hideRunnable, 8000L)
+            hidePending = true
+            return true
+        }
+        return super.dispatchKeyEvent(event)
+    }
+
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
         // Any key activity extends overlay visibility
         if (hidePending && keyCode != KeyEvent.KEYCODE_BACK && keyCode != KeyEvent.KEYCODE_DPAD_LEFT) {
             handler.removeCallbacks(hideRunnable)
-            handler.postDelayed(hideRunnable, 5000L)
+            handler.postDelayed(hideRunnable, 8000L)
         }
 
         if (keyCode == KeyEvent.KEYCODE_CHANNEL_UP || keyCode == KeyEvent.KEYCODE_DPAD_UP) {
@@ -353,105 +356,12 @@ class PlaybackActivity : androidx.fragment.app.FragmentActivity() {
             }
             return true
         }
-        if (keyCode == KeyEvent.KEYCODE_DPAD_CENTER) {
-            showOverlay(currentChannel?.uuid ?: return true)
-            handler.removeCallbacks(hideRunnable)
-            handler.postDelayed(hideRunnable, 5000L)
-            hidePending = true
-            return true
-        }
         if (keyCode == KeyEvent.KEYCODE_BACK || keyCode == KeyEvent.KEYCODE_DPAD_LEFT) {
             if (hidePending) { hideOverlay(); return true }
             finish()
             return true
         }
         return super.onKeyDown(keyCode, event)
-    }
-
-    override fun onKeyLongPress(keyCode: Int, event: KeyEvent?): Boolean {
-        if (keyCode == KeyEvent.KEYCODE_DPAD_CENTER) {
-            showTrackMenu()
-            return true
-        }
-        return super.onKeyLongPress(keyCode, event)
-    }
-
-    private fun showTrackMenu() {
-        val p = player ?: return
-        val tracks = p.currentTracks
-
-        var audioTracks = mutableListOf<Pair<String, String>>() // (language, label)
-        var currentAudio = ""
-        var subtitleEnabled = false
-        var subtitleCount = 0
-
-        for (group in tracks.groups) {
-            when (group.type) {
-                C.TRACK_TYPE_AUDIO -> {
-                    for (i in 0 until group.length) {
-                        val fmt = group.getTrackFormat(i)
-                        val lang = fmt.language ?: "unknown"
-                        val label = fmt.label ?: lang
-                        audioTracks.add(lang to label)
-                        if (group.isSelected()) {
-                            currentAudio = lang
-                        }
-                    }
-                }
-                C.TRACK_TYPE_TEXT -> {
-                    subtitleEnabled = group.length > 0 && group.isSelected()
-                    subtitleCount = group.length
-                }
-            }
-        }
-
-        if (audioTracks.isEmpty() && subtitleCount == 0) {
-            AlertDialog.Builder(this)
-                .setTitle("Playback Settings")
-                .setMessage("No alternate audio or subtitle tracks available")
-                .setPositiveButton("Close", null)
-                .show()
-            return
-        }
-
-        val items = mutableListOf<String>()
-        val actions = mutableListOf<() -> Unit>()
-
-        // Audio tracks
-        for ((lang, label) in audioTracks) {
-            val marker = if (lang == currentAudio) "●" else "○"
-            items.add("$marker Audio: $label")
-            actions.add {
-                p.trackSelectionParameters = p.trackSelectionParameters
-                    .buildUpon()
-                    .setPreferredAudioLanguage(lang)
-                    .build()
-            }
-        }
-
-        if (subtitleCount > 0) {
-            val marker = if (subtitleEnabled) "●" else "○"
-            items.add("$marker Subtitles: ${if (subtitleEnabled) "On" else "Off"}")
-            actions.add {
-                p.trackSelectionParameters = p.trackSelectionParameters
-                    .buildUpon()
-                    .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, subtitleEnabled)
-                    .build()
-            }
-        }
-
-        items.add("")
-        actions.add {}
-        items.add("Close")
-        actions.add {}
-
-        AlertDialog.Builder(this)
-            .setTitle("Playback Settings")
-            .setItems(items.toTypedArray()) { dialog, which ->
-                actions.getOrNull(which)?.invoke()
-                dialog.dismiss()
-            }
-            .show()
     }
 
     override fun onStop() {

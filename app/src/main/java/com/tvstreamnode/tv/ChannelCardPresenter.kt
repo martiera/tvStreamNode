@@ -21,7 +21,7 @@ class ChannelCardPresenter : Presenter() {
     override fun onCreateViewHolder(parent: ViewGroup): ViewHolder {
         val density = parent.resources.displayMetrics.density
         val cardW = (200 * density).toInt()
-        val cardH = (170 * density).toInt()
+        val cardH = (230 * density).toInt()
 
         val card = LinearLayout(parent.context).apply {
             orientation = LinearLayout.VERTICAL
@@ -40,7 +40,7 @@ class ChannelCardPresenter : Presenter() {
         // Channel name
         val channelName = TextView(parent.context).apply {
             id = 1
-            textSize = 14f
+            textSize = 18f
             setTextColor(Color.WHITE)
             setTypeface(null, android.graphics.Typeface.BOLD)
             maxLines = 1
@@ -59,7 +59,7 @@ class ChannelCardPresenter : Presenter() {
         // Show title
         val showTitle = TextView(parent.context).apply {
             id = 2
-            textSize = 12f
+            textSize = 16f
             setTextColor(Color.WHITE)
             maxLines = 2
             ellipsize = android.text.TextUtils.TruncateAt.END
@@ -98,7 +98,7 @@ class ChannelCardPresenter : Presenter() {
         // Time text
         val timeText = TextView(parent.context).apply {
             id = 4
-            textSize = 10f
+            textSize = 12f
             setTextColor(Color.parseColor("#AAAAAA"))
             maxLines = 1
         }
@@ -107,7 +107,7 @@ class ChannelCardPresenter : Presenter() {
         // Description
         val descText = TextView(parent.context).apply {
             id = 5
-            textSize = 10f
+            textSize = 14f
             setTextColor(Color.parseColor("#777777"))
             maxLines = 2
             ellipsize = android.text.TextUtils.TruncateAt.END
@@ -152,11 +152,6 @@ class ChannelCardPresenter : Presenter() {
         val descText = card.getChildAt(5) as TextView
 
         channelName.text = channel.name ?: ""
-        channelName.textSize = when {
-            (channel.name?.length ?: 0) > 14 -> 12f
-            (channel.name?.length ?: 0) > 10 -> 13f
-            else -> 14f
-        }
 
         if (event != null) {
             showTitle.text = event.title ?: "—"
