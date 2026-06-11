@@ -54,4 +54,5 @@ dependencies {
     implementation(libs.lifecycle.runtime.ktx)
     implementation(libs.preference.ktx)
     implementation(libs.gson)
+    implementation(libs.glide)
 }

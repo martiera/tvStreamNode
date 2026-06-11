@@ -21,10 +21,6 @@ class EpgCardPresenter : Presenter() {
 
         val title = event.title ?: "—"
         val time = formatTime(event.start, event.stop)
-        val channelInfo = buildString {
-            event.channelNumber?.let { append("$it ") }
-            event.channelName?.let { append(it) }
-        }
 
         cardView.titleText = title
         cardView.contentText = time

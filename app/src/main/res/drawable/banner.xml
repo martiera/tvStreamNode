@@ -1,6 +1,31 @@
 <?xml version="1.0" encoding="utf-8"?>
-<shape xmlns:android="http://schemas.android.com/apk/res/android"
-    android:shape="rectangle">
-    <solid android:color="@color/primary" />
-    <stroke android:width="1dp" android:color="@color/primary_dark" />
-</shape>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="320dp"
+    android:height="180dp"
+    android:viewportWidth="320"
+    android:viewportHeight="180">
+
+    <!-- Background -->
+    <path
+        android:fillColor="#1A73E8"
+        android:pathData="M0,0 L320,0 L320,180 L0,180 Z" />
+
+    <!-- TV icon simplified -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M120,30 L200,30 C206,30 210,34 210,40 L210,100 C210,106 206,110 200,110 L120,110 C114,110 110,106 110,100 L110,40 C110,34 114,30 120,30 Z" />
+
+    <path
+        android:fillColor="#0D47A1"
+        android:pathData="M122,36 L198,36 C200,36 202,38 202,40 L202,98 C202,100 200,102 198,102 L122,102 C120,102 118,100 118,98 L118,40 C118,38 120,36 122,36 Z" />
+
+    <!-- App name text background -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M110,130 L210,130 L210,148 L110,148 Z" />
+
+    <!-- Smaller TV icon in bottom-left corner -->
+    <path
+        android:fillColor="#1A73E8"
+        android:pathData="M118,134 L154,134 C156,134 158,136 158,138 L158,144 C158,146 156,148 154,148 L118,148 C116,148 114,146 114,144 L114,138 C114,136 116,134 118,134 Z" />
+</vector>

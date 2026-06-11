@@ -2,9 +2,9 @@ package com.tvstreamnode.tv
 
 import android.os.Bundle
 import android.view.KeyEvent
-import android.view.View
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
+import androidx.media3.common.PlaybackException
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.hls.HlsMediaSource
@@ -16,6 +16,7 @@ class PlaybackActivity : androidx.fragment.app.FragmentActivity() {
 
     private var player: ExoPlayer? = null
     private var playerView: PlayerView? = null
+    private var fallbackTried = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -24,12 +25,10 @@ class PlaybackActivity : androidx.fragment.app.FragmentActivity() {
             finish(); return
         }
         val channelName = intent.getStringExtra("channel_name")
-        val eventTitle = intent.getStringExtra("event_title")
 
         title = channelName ?: getString(R.string.play_channel)
 
         playerView = PlayerView(this).apply {
-            setContentDescription(eventTitle ?: channelName ?: "")
             keepScreenOn = true
             useController = true
         }
@@ -37,25 +36,40 @@ class PlaybackActivity : androidx.fragment.app.FragmentActivity() {
 
         val prefs = Preferences(this)
         val baseUrl = prefs.serverUrl.trimEnd('/')
+        val tsUrl = "$baseUrl/stream/channel/$channelUuid"
         val hlsUrl = "$baseUrl/stream/channel/$channelUuid/hls"
 
         val dataSourceFactory = DefaultHttpDataSource.Factory()
             .setAllowCrossProtocolRedirects(true)
 
-        val hlsSource = HlsMediaSource.Factory(dataSourceFactory)
-            .createMediaSource(MediaItem.fromUri(hlsUrl))
-
         player = ExoPlayer.Builder(this).build().apply {
-            setMediaSource(hlsSource)
-            prepare()
             playWhenReady = true
+
             addListener(object : Player.Listener {
                 override fun onPlaybackStateChanged(playbackState: Int) {
                     if (playbackState == Player.STATE_ENDED) {
                         finish()
                     }
                 }
+
+                override fun onPlayerError(error: PlaybackException) {
+                    if (!fallbackTried) {
+                        fallbackTried = true
+                        // Try HLS as fallback (some servers have it configured)
+                        val hlsSource = HlsMediaSource.Factory(dataSourceFactory)
+                            .createMediaSource(MediaItem.fromUri(hlsUrl))
+                        setMediaSource(hlsSource, true)
+                        prepare()
+                        playWhenReady = true
+                    }
+                }
             })
+
+            // Default: raw MPEG-TS (video/mp2t) — all Tvheadend servers support this
+            val tsSource = ProgressiveMediaSource.Factory(dataSourceFactory)
+                .createMediaSource(MediaItem.fromUri(tsUrl))
+            setMediaSource(tsSource)
+            prepare()
         }
 
         playerView?.player = player

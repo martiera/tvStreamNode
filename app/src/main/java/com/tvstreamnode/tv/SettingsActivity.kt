@@ -1,7 +1,10 @@
 package com.tvstreamnode.tv
 
+import android.app.AlertDialog
 import android.os.Bundle
 import android.text.InputType
+import android.view.inputmethod.EditorInfo
+import android.widget.EditText
 import android.widget.Toast
 import androidx.leanback.app.GuidedStepSupportFragment
 import androidx.leanback.widget.GuidanceStylist
@@ -32,9 +35,15 @@ class SettingsActivity : androidx.fragment.app.FragmentActivity() {
         private lateinit var testAction: GuidedAction
 
         override fun onCreateGuidance(savedInstanceState: Bundle?): GuidanceStylist.Guidance {
+            val connectionError = requireActivity().intent?.getBooleanExtra("connection_error", false) ?: false
+            val description = if (connectionError) {
+                "⚠ Connection failed — check your server settings"
+            } else {
+                getString(R.string.server_url_summary)
+            }
             return GuidanceStylist.Guidance(
                 getString(R.string.settings_title),
-                getString(R.string.server_url_summary),
+                description,
                 null,
                 null
             )
@@ -45,24 +54,18 @@ class SettingsActivity : androidx.fragment.app.FragmentActivity() {
                 .id(ACTION_URL)
                 .title(getString(R.string.server_url))
                 .description(prefs.serverUrl.ifBlank { getString(R.string.server_url_summary) })
-                .editInputType(InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI)
-                .editable(true)
                 .build()
 
             usernameAction = GuidedAction.Builder(requireContext())
                 .id(ACTION_USERNAME)
                 .title(getString(R.string.username))
                 .description(prefs.username.ifBlank { "—" })
-                .editInputType(InputType.TYPE_CLASS_TEXT)
-                .editable(true)
                 .build()
 
             passwordAction = GuidedAction.Builder(requireContext())
                 .id(ACTION_PASSWORD)
                 .title(getString(R.string.password))
                 .description(if (prefs.password.isNotBlank()) "••••••••" else "—")
-                .editInputType(InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD)
-                .editable(true)
                 .build()
 
             testAction = GuidedAction.Builder(requireContext())
@@ -77,35 +80,58 @@ class SettingsActivity : androidx.fragment.app.FragmentActivity() {
         }
 
         override fun onGuidedActionClicked(action: GuidedAction) {
-            if (action.id == ACTION_TEST) {
-                saveFields()
-                testConnection()
-            }
-        }
-
-        override fun onGuidedActionEdited(action: GuidedAction) {
             when (action.id) {
-                ACTION_URL -> {
-                    urlAction.description = action.editDescription.ifBlank { getString(R.string.server_url_summary) }
+                ACTION_URL -> showEditDialog(
+                    getString(R.string.server_url),
+                    prefs.serverUrl,
+                    InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
+                ) { value ->
+                    prefs.serverUrl = value
+                    urlAction.description = value.ifBlank { getString(R.string.server_url_summary) }
+                    notifyActionChanged(action.id.toInt())
                 }
-                ACTION_USERNAME -> {
-                    usernameAction.description = action.editDescription.ifBlank { "—" }
+                ACTION_USERNAME -> showEditDialog(
+                    getString(R.string.username),
+                    prefs.username,
+                    InputType.TYPE_CLASS_TEXT
+                ) { value ->
+                    prefs.username = value
+                    usernameAction.description = value.ifBlank { "—" }
+                    notifyActionChanged(action.id.toInt())
                 }
-                ACTION_PASSWORD -> {
-                    passwordAction.description = if (action.editDescription.isNotBlank()) "••••••••" else "—"
+                ACTION_PASSWORD -> showEditDialog(
+                    getString(R.string.password),
+                    prefs.password,
+                    InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+                ) { value ->
+                    prefs.password = value
+                    passwordAction.description = if (value.isNotBlank()) "••••••••" else "—"
+                    notifyActionChanged(action.id.toInt())
+                }
+                ACTION_TEST -> {
+                    RetrofitClient.reset()
+                    testConnection()
                 }
             }
         }
 
-        override fun onPause() {
-            super.onPause()
-            saveFields()
-        }
+        private fun showEditDialog(title: String, currentValue: String, inputType: Int, onSave: (String) -> Unit) {
+            val input = EditText(requireContext()).apply {
+                setText(currentValue)
+                setSelection(currentValue.length)
+                this.inputType = inputType
+                imeOptions = EditorInfo.IME_ACTION_DONE
+                isSingleLine = true
+            }
 
-        private fun saveFields() {
-            prefs.serverUrl = urlAction.editDescription.trim()
-            prefs.username = usernameAction.editDescription.trim()
-            prefs.password = passwordAction.editDescription
+            AlertDialog.Builder(requireContext())
+                .setTitle(title)
+                .setView(input)
+                .setPositiveButton(android.R.string.ok) { _, _ ->
+                    onSave(input.text.toString())
+                }
+                .setNegativeButton(android.R.string.cancel, null)
+                .show()
         }
 
         private fun testConnection() {
@@ -117,7 +143,7 @@ class SettingsActivity : androidx.fragment.app.FragmentActivity() {
 
             testAction.title = getString(R.string.connecting)
             testAction.isEnabled = false
-            notifyActionChanged(testAction.id)
+            notifyActionChanged(testAction.id.toInt())
 
             CoroutineScope(Dispatchers.Main).launch {
                 try {
@@ -125,16 +151,20 @@ class SettingsActivity : androidx.fragment.app.FragmentActivity() {
                         try {
                             val api = RetrofitClient.getApi(prefs)
                             api.testConnection()
-                            true
+                            null
                         } catch (e: Exception) {
-                            false
+                            e.message ?: "Unknown error"
                         }
                     }
-                    showToast(if (result) getString(R.string.connection_ok) else getString(R.string.connection_failed))
+                    if (result == null) {
+                        showToast(getString(R.string.connection_ok))
+                    } else {
+                        showToast("$result")
+                    }
                 } finally {
                     testAction.title = getString(R.string.test_connection)
                     testAction.isEnabled = true
-                    notifyActionChanged(testAction.id)
+                    notifyActionChanged(testAction.id.toInt())
                 }
             }
         }

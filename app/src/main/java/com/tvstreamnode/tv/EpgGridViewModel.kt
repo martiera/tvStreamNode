@@ -13,34 +13,47 @@ import com.tvstreamnode.tv.data.repository.EpgRepository
 import com.tvstreamnode.tv.util.Preferences
 import kotlinx.coroutines.launch
 
-data class BrowseState(
+data class EpgGridState(
     val channels: List<Channel> = emptyList(),
-    val currentEvents: List<EpgEvent> = emptyList(),
-    val isLoading: Boolean = false,
+    val events: List<EpgEvent> = emptyList(),
+    val isLoading: Boolean = true,
     val error: String? = null
 )
 
-class BrowseViewModel(application: Application) : AndroidViewModel(application) {
+class EpgGridViewModel(application: Application) : AndroidViewModel(application) {
 
     private val prefs = Preferences(application)
     private val api = RetrofitClient.getApi(prefs)
     private val channelRepo = ChannelRepository(api)
     private val epgRepo = EpgRepository(api)
 
-    private val _state = MutableLiveData(BrowseState())
-    val state: LiveData<BrowseState> = _state
+    private val _state = MutableLiveData(EpgGridState())
+    val state: LiveData<EpgGridState> = _state
 
-    fun loadData() {
-        if (!prefs.isConfigured) {
-            _state.value = _state.value?.copy(error = "Server not configured")
+    private var cachedChannels: List<Channel>? = null
+    private var cachedEvents: List<EpgEvent>? = null
+    private var cacheTime: Long = 0L
+
+    // Load 6-hour window and cache in memory
+    fun loadData(forceRefresh: Boolean = false) {
+        val now = System.currentTimeMillis()
+        if (!forceRefresh && cachedChannels != null && now - cacheTime < 300_000L) {
+            _state.value = EpgGridState(
+                channels = cachedChannels!!,
+                events = cachedEvents!!
+            )
             return
         }
 
         _state.value = _state.value?.copy(isLoading = true, error = null)
 
         viewModelScope.launch {
+            val nowSec = System.currentTimeMillis() / 1000
+            val rangeStart = nowSec - 10800L // 3 hours before
+            val rangeEnd = nowSec + 10800L   // 3 hours after
+
             val channelsResult = channelRepo.getChannels()
-            val epgResult = epgRepo.getCurrentEvents()
+            val epgResult = epgRepo.getEpgInRange(start = rangeStart, end = rangeEnd)
 
             val channels = channelsResult.getOrNull() ?: emptyList()
             val events = epgResult.getOrNull() ?: emptyList()
@@ -51,22 +64,16 @@ class BrowseViewModel(application: Application) : AndroidViewModel(application) 
                 else -> null
             }
 
-            _state.value = BrowseState(
+            cachedChannels = channels
+            cachedEvents = events
+            cacheTime = now
+
+            _state.value = EpgGridState(
                 channels = channels,
-                currentEvents = events,
+                events = events,
                 isLoading = false,
                 error = error
             )
         }
-    }
-
-    fun getStreamUrl(channelUuid: String): String {
-        val base = prefs.serverUrl.trimEnd('/')
-        return "$base/stream/channel/$channelUuid"
-    }
-
-    fun getHlsStreamUrl(channelUuid: String): String {
-        val base = prefs.serverUrl.trimEnd('/')
-        return "$base/stream/channel/$channelUuid/hls"
     }
 }
