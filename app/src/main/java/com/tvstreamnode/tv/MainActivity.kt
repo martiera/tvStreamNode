@@ -52,8 +52,13 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
         super.onResume()
         if (autoPlayed) {
             autoPlayed = false
+            val prefs = Preferences(this)
             supportFragmentManager.beginTransaction()
-                .replace(android.R.id.content, EpgGridFragment())
+                .replace(android.R.id.content, ChannelBrowseFragment().apply {
+                    arguments = Bundle().apply {
+                        putString("select_uuid", prefs.lastChannelUuid)
+                    }
+                })
                 .addToBackStack("epg")
                 .commit()
         }

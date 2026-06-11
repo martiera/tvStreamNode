@@ -13,6 +13,7 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.fragment.app.Fragment
 import androidx.leanback.widget.VerticalGridView
+import com.tvstreamnode.tv.util.Preferences
 import androidx.recyclerview.widget.RecyclerView
 
 class MainMenuFragment : Fragment() {
@@ -104,8 +105,13 @@ class MainMenuFragment : Fragment() {
                 tv.setOnClickListener {
                     when (position) {
                         0 -> {
+                            val p = Preferences(requireContext())
                             parentFragmentManager.beginTransaction()
-                                .replace(android.R.id.content, EpgGridFragment())
+                                .replace(android.R.id.content, ChannelBrowseFragment().apply {
+                                    arguments = Bundle().apply {
+                                        putString("select_uuid", p.lastChannelUuid)
+                                    }
+                                })
                                 .addToBackStack("epg")
                                 .commit()
                         }

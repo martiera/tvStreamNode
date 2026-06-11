@@ -34,6 +34,14 @@ interface TvheadendApi {
         @Query("sort") sort: String = "start"
     ): EpgGridResponse
 
+    @GET("api/epg/events/grid")
+    suspend fun getEpgInRangeChannel(
+        @Query("filter", encoded = true) filter: String,
+        @Query("channel") channelUuid: String,
+        @Query("limit") limit: Int = 10,
+        @Query("sort") sort: String = "start"
+    ): EpgGridResponse
+
     @GET("api/channel/grid")
     suspend fun testConnection(): ChannelGridResponse
 }
