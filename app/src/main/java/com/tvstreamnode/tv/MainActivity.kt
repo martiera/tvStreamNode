@@ -11,6 +11,8 @@ import kotlinx.coroutines.withContext
 
 class MainActivity : androidx.fragment.app.FragmentActivity() {
 
+    private var autoPlayed = false
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -23,9 +25,43 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
         }
 
         if (savedInstanceState == null) {
+            showMenu()
+
+            if (prefs.hasLastChannel) {
+                lifecycleScope.launch {
+                    val connected = withContext(Dispatchers.IO) {
+                        try {
+                            RetrofitClient.reset()
+                            RetrofitClient.getApi(prefs).testConnection()
+                            true
+                        } catch (_: Exception) { false }
+                    }
+                    if (connected) {
+                        autoPlayed = true
+                        startActivity(Intent(this@MainActivity, PlaybackActivity::class.java).apply {
+                            putExtra("channel_uuid", prefs.lastChannelUuid)
+                            putExtra("channel_name", prefs.lastChannelName)
+                        })
+                    }
+                }
+            }
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (autoPlayed) {
+            autoPlayed = false
             supportFragmentManager.beginTransaction()
-                .replace(android.R.id.content, MainMenuFragment())
+                .replace(android.R.id.content, EpgGridFragment())
+                .addToBackStack("epg")
                 .commit()
         }
+    }
+
+    private fun showMenu() {
+        supportFragmentManager.beginTransaction()
+            .replace(android.R.id.content, MainMenuFragment())
+            .commit()
     }
 }

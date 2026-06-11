@@ -36,6 +36,8 @@ class PlaybackActivity : androidx.fragment.app.FragmentActivity() {
         setContentView(playerView)
 
         val prefs = Preferences(this)
+        prefs.lastChannelUuid = channelUuid
+        prefs.lastChannelName = channelName ?: ""
         val baseUrl = prefs.serverUrl.trimEnd('/')
         val tsUrl = "$baseUrl/stream/channel/$channelUuid"
         val hlsUrl = "$baseUrl/stream/channel/$channelUuid/hls"

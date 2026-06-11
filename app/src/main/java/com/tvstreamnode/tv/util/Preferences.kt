@@ -21,8 +21,19 @@ class Preferences(context: Context) {
         get() = prefs.getString(KEY_PASSWORD, "") ?: ""
         set(value) = prefs.edit { putString(KEY_PASSWORD, value) }
 
+    var lastChannelUuid: String
+        get() = prefs.getString(KEY_LAST_CHANNEL_UUID, "") ?: ""
+        set(value) = prefs.edit { putString(KEY_LAST_CHANNEL_UUID, value) }
+
+    var lastChannelName: String
+        get() = prefs.getString(KEY_LAST_CHANNEL_NAME, "") ?: ""
+        set(value) = prefs.edit { putString(KEY_LAST_CHANNEL_NAME, value) }
+
     val isConfigured: Boolean
         get() = serverUrl.isNotBlank()
+
+    val hasLastChannel: Boolean
+        get() = lastChannelUuid.isNotBlank()
 
     fun clear() {
         prefs.edit {
@@ -36,5 +47,7 @@ class Preferences(context: Context) {
         private const val KEY_SERVER_URL = "server_url"
         private const val KEY_USERNAME = "username"
         private const val KEY_PASSWORD = "password"
+        private const val KEY_LAST_CHANNEL_UUID = "last_channel_uuid"
+        private const val KEY_LAST_CHANNEL_NAME = "last_channel_name"
     }
 }
