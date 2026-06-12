@@ -1,5 +1,6 @@
 package com.tvstreamnode.tv
 
+import android.app.AlertDialog
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
@@ -15,6 +16,7 @@ import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.lifecycle.lifecycleScope
+import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.common.PlaybackException
@@ -318,6 +320,10 @@ class PlaybackActivity : androidx.fragment.app.FragmentActivity() {
 
     override fun dispatchKeyEvent(event: KeyEvent?): Boolean {
         if (event?.action == KeyEvent.ACTION_DOWN && event.keyCode == KeyEvent.KEYCODE_DPAD_CENTER) {
+            if (hidePending) {
+                showTrackMenu()
+                return true
+            }
             showOverlay(currentChannel?.uuid ?: return true)
             handler.removeCallbacks(hideRunnable)
             handler.postDelayed(hideRunnable, 8000L)
@@ -362,6 +368,75 @@ class PlaybackActivity : androidx.fragment.app.FragmentActivity() {
             return true
         }
         return super.onKeyDown(keyCode, event)
+    }
+
+    private fun showTrackMenu() {
+        val p = player ?: return
+        val tracks = p.currentTracks
+
+        var audioTracks = mutableListOf<Pair<String, String>>()
+        var currentAudio = ""
+        var subtitleEnabled = false
+        var subtitleCount = 0
+
+        for (group in tracks.groups) {
+            when (group.type) {
+                C.TRACK_TYPE_AUDIO -> {
+                    for (i in 0 until group.length) {
+                        val fmt = group.getTrackFormat(i)
+                        val lang = fmt.language ?: "unknown"
+                        val label = fmt.label ?: lang
+                        audioTracks.add(lang to label)
+                        if (group.isSelected()) currentAudio = lang
+                    }
+                }
+                C.TRACK_TYPE_TEXT -> {
+                    subtitleEnabled = group.length > 0 && group.isSelected()
+                    subtitleCount = group.length
+                }
+            }
+        }
+
+        if (audioTracks.isEmpty() && subtitleCount == 0) {
+            AlertDialog.Builder(this)
+                .setTitle("Playback Settings")
+                .setMessage("No alternate audio or subtitle tracks available")
+                .setPositiveButton("Close", null)
+                .show()
+            return
+        }
+
+        val items = mutableListOf<String>()
+        val actions = mutableListOf<() -> Unit>()
+
+        for ((lang, label) in audioTracks) {
+            val marker = if (lang == currentAudio) "●" else "○"
+            items.add("$marker Audio: $label")
+            actions.add {
+                p.trackSelectionParameters = p.trackSelectionParameters
+                    .buildUpon().setPreferredAudioLanguage(lang).build()
+            }
+        }
+
+        if (subtitleCount > 0) {
+            val marker = if (subtitleEnabled) "●" else "○"
+            items.add("$marker Subtitles: ${if (subtitleEnabled) "On" else "Off"}")
+            actions.add {
+                p.trackSelectionParameters = p.trackSelectionParameters
+                    .buildUpon().setTrackTypeDisabled(C.TRACK_TYPE_TEXT, subtitleEnabled).build()
+            }
+        }
+
+        items.add(""); actions.add {}
+        items.add("Close"); actions.add {}
+
+        AlertDialog.Builder(this)
+            .setTitle("Playback Settings")
+            .setItems(items.toTypedArray()) { dialog, which ->
+                actions.getOrNull(which)?.invoke()
+                dialog.dismiss()
+            }
+            .show()
     }
 
     override fun onStop() {
