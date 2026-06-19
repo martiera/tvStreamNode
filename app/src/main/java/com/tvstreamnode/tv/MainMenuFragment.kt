@@ -19,7 +19,7 @@ import androidx.recyclerview.widget.RecyclerView
 class MainMenuFragment : Fragment() {
 
     companion object {
-        private val MENU_ITEMS = arrayOf("Channels", "Settings", "Exit")
+        private val MENU_ITEMS = arrayOf("Channels", "Lists", "Settings", "Exit")
         private const val MENU_WIDTH_FRACTION = 0.25f
     }
 
@@ -112,11 +112,17 @@ class MainMenuFragment : Fragment() {
                                         putString("select_uuid", p.lastChannelUuid)
                                     }
                                 })
-                                .addToBackStack("epg")
+                                .addToBackStack("browse")
                                 .commit()
                         }
-                        1 -> startActivity(Intent(requireContext(), SettingsActivity::class.java))
-                        2 -> requireActivity().finishAffinity()
+                        1 -> {
+                            parentFragmentManager.beginTransaction()
+                                .replace(android.R.id.content, ListsFragment())
+                                .addToBackStack("lists")
+                                .commit()
+                        }
+                        2 -> startActivity(Intent(requireContext(), SettingsActivity::class.java))
+                        3 -> requireActivity().finishAffinity()
                     }
                 }
             }

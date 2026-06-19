@@ -15,6 +15,7 @@ import android.view.animation.TranslateAnimation
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
+import android.widget.Toast
 import androidx.lifecycle.lifecycleScope
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
@@ -31,6 +32,7 @@ import com.tvstreamnode.tv.data.model.EpgEvent
 import com.tvstreamnode.tv.data.repository.ChannelRepository
 import com.tvstreamnode.tv.data.repository.EpgRepository
 import com.tvstreamnode.tv.util.EpgCache
+import com.tvstreamnode.tv.util.ListManager
 import com.tvstreamnode.tv.util.Preferences
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -248,6 +250,21 @@ class PlaybackActivity : androidx.fragment.app.FragmentActivity() {
         p.setMediaSource(tsSource, true)
         p.prepare()
         p.playWhenReady = true
+
+        // Auto-enable subtitles if available
+        val autoSub = object : Player.Listener {
+            override fun onTracksChanged(tracks: androidx.media3.common.Tracks) {
+                p.removeListener(this)
+                for (group in tracks.groups) {
+                    if (group.type == C.TRACK_TYPE_TEXT && group.length > 0 && !group.isSelected()) {
+                        p.trackSelectionParameters = p.trackSelectionParameters
+                            .buildUpon().setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false).build()
+                        break
+                    }
+                }
+            }
+        }
+        p.addListener(autoSub)
     }
 
     private var currentChannel: Channel? = null
@@ -342,7 +359,7 @@ class PlaybackActivity : androidx.fragment.app.FragmentActivity() {
 
         if (keyCode == KeyEvent.KEYCODE_CHANNEL_UP || keyCode == KeyEvent.KEYCODE_DPAD_UP) {
             if (channels.isNotEmpty()) {
-                val next = (currentChannelIndex + 1).coerceAtMost(channels.size - 1)
+                val next = if (currentChannelIndex >= channels.size - 1) 0 else currentChannelIndex + 1
                 if (next != currentChannelIndex) {
                     currentChannelIndex = next; currentIndex = next
                     currentChannel = channels[next]
@@ -353,7 +370,7 @@ class PlaybackActivity : androidx.fragment.app.FragmentActivity() {
         }
         if (keyCode == KeyEvent.KEYCODE_CHANNEL_DOWN || keyCode == KeyEvent.KEYCODE_DPAD_DOWN) {
             if (channels.isNotEmpty()) {
-                val prev = (currentChannelIndex - 1).coerceAtLeast(0)
+                val prev = if (currentChannelIndex <= 0) channels.size - 1 else currentChannelIndex - 1
                 if (prev != currentChannelIndex) {
                     currentChannelIndex = prev; currentIndex = prev
                     currentChannel = channels[prev]
@@ -368,6 +385,58 @@ class PlaybackActivity : androidx.fragment.app.FragmentActivity() {
             return true
         }
         return super.onKeyDown(keyCode, event)
+    }
+
+    private fun showChannelListMenu() {
+        ListManager.init(this)
+        val uuid = currentChannel?.uuid ?: return
+        val chName = currentChannel?.name ?: ""
+        val lists = ListManager.getAll()
+        if (lists.isEmpty()) {
+            Toast.makeText(this, "No lists — create one in Lists menu", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        val density = resources.displayMetrics.density
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding((24 * density).toInt(), (12 * density).toInt(), (24 * density).toInt(), (8 * density).toInt())
+        }
+
+        for (list in lists) {
+            val isInList = uuid in list.channelIds
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                setPadding((8 * density).toInt(), (10 * density).toInt(), (8 * density).toInt(), (10 * density).toInt())
+                isFocusable = true
+                isClickable = true
+                setOnClickListener {
+                    ListManager.toggleChannel(list.id, uuid, !isInList)
+                    val msg = if (!isInList) "Added to ${list.name}" else "Removed from ${list.name}"
+                    Toast.makeText(this@PlaybackActivity, msg, Toast.LENGTH_SHORT).show()
+                }
+            }
+
+            row.addView(TextView(this).apply {
+                    text = if (isInList) "☑" else "☐"
+                textSize = 20f
+                setTextColor(if (isInList) Color.parseColor("#1A73E8") else Color.parseColor("#666666"))
+                layoutParams = LinearLayout.LayoutParams((36 * density).toInt(), ViewGroup.LayoutParams.WRAP_CONTENT)
+            })
+            row.addView(TextView(this).apply {
+                text = list.name
+                textSize = 16f
+                setTextColor(Color.WHITE)
+                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+            })
+            content.addView(row)
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle("Lists — $chName")
+            .setView(content)
+            .setPositiveButton("Close", null)
+            .show()
     }
 
     private fun showTrackMenu() {
@@ -406,37 +475,121 @@ class PlaybackActivity : androidx.fragment.app.FragmentActivity() {
             return
         }
 
-        val items = mutableListOf<String>()
-        val actions = mutableListOf<() -> Unit>()
+        val density = resources.displayMetrics.density
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding((24 * density).toInt(), (16 * density).toInt(), (24 * density).toInt(), (8 * density).toInt())
+        }
 
+        // Audio section header
+        content.addView(TextView(this).apply {
+            text = "Audio"
+            textSize = 18f
+            setTextColor(Color.parseColor("#999999"))
+            setTypeface(null, android.graphics.Typeface.BOLD)
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { bottomMargin = (8 * density).toInt() }
+        })
+
+        // Audio track rows
         for ((lang, label) in audioTracks) {
-            val marker = if (lang == currentAudio) "●" else "○"
-            items.add("$marker Audio: $label")
-            actions.add {
-                p.trackSelectionParameters = p.trackSelectionParameters
-                    .buildUpon().setPreferredAudioLanguage(lang).build()
+            val selected = lang == currentAudio
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                setPadding((8 * density).toInt(), (6 * density).toInt(), (8 * density).toInt(), (6 * density).toInt())
+                isFocusable = true
+                isClickable = true
+                val nBg = GradientDrawable().apply { setColor(Color.TRANSPARENT) }
+                val fBg = GradientDrawable().apply {
+                    setColor(Color.parseColor("#2A2A2A"))
+                    setStroke(2, Color.parseColor("#1A73E8"))
+                }
+                setOnFocusChangeListener { v, hasFocus -> v.background = if (hasFocus) fBg else nBg }
+                setOnClickListener {
+                    p.trackSelectionParameters = p.trackSelectionParameters
+                        .buildUpon().setPreferredAudioLanguage(lang).build()
+                    showToast("Audio: $label")
+                }
             }
+
+            row.addView(TextView(this).apply {
+                text = if (selected) "●" else "○"
+                textSize = 20f
+                setTextColor(if (selected) Color.parseColor("#1A73E8") else Color.parseColor("#666666"))
+                layoutParams = LinearLayout.LayoutParams(
+                    (32 * density).toInt(),
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+                )
+            })
+            row.addView(TextView(this).apply {
+                text = label.replaceFirstChar { it.uppercase() }
+                textSize = 16f
+                setTextColor(if (selected) Color.WHITE else Color.parseColor("#CCCCCC"))
+                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+            })
+            content.addView(row)
         }
 
+        // Subtitles section
         if (subtitleCount > 0) {
-            val marker = if (subtitleEnabled) "●" else "○"
-            items.add("$marker Subtitles: ${if (subtitleEnabled) "On" else "Off"}")
-            actions.add {
-                p.trackSelectionParameters = p.trackSelectionParameters
-                    .buildUpon().setTrackTypeDisabled(C.TRACK_TYPE_TEXT, subtitleEnabled).build()
-            }
-        }
+            content.addView(TextView(this).apply {
+                text = "Subtitles"
+                textSize = 18f
+                setTextColor(Color.parseColor("#999999"))
+                setTypeface(null, android.graphics.Typeface.BOLD)
+                layoutParams = LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+                ).apply { topMargin = (12 * density).toInt(); bottomMargin = (8 * density).toInt() }
+            })
 
-        items.add(""); actions.add {}
-        items.add("Close"); actions.add {}
+            val subRow = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                setPadding((8 * density).toInt(), (6 * density).toInt(), (8 * density).toInt(), (6 * density).toInt())
+                isFocusable = true
+                isClickable = true
+                val nBg = GradientDrawable().apply { setColor(Color.TRANSPARENT) }
+                val fBg = GradientDrawable().apply {
+                    setColor(Color.parseColor("#2A2A2A"))
+                    setStroke(2, Color.parseColor("#1A73E8"))
+                }
+                setOnFocusChangeListener { v, hasFocus -> v.background = if (hasFocus) fBg else nBg }
+                setOnClickListener {
+                    p.trackSelectionParameters = p.trackSelectionParameters
+                        .buildUpon().setTrackTypeDisabled(C.TRACK_TYPE_TEXT, subtitleEnabled).build()
+                    showToast("Subtitles: ${if (!subtitleEnabled) "On" else "Off"}")
+                }
+            }
+
+            subRow.addView(TextView(this).apply {
+                text = if (subtitleEnabled) "●" else "○"
+                textSize = 20f
+                setTextColor(if (subtitleEnabled) Color.parseColor("#1A73E8") else Color.parseColor("#666666"))
+                layoutParams = LinearLayout.LayoutParams(
+                    (32 * density).toInt(),
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+                )
+            })
+            subRow.addView(TextView(this).apply {
+                text = if (subtitleEnabled) "On" else "Off"
+                textSize = 16f
+                setTextColor(Color.WHITE)
+                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+            })
+            content.addView(subRow)
+        }
 
         AlertDialog.Builder(this)
             .setTitle("Playback Settings")
-            .setItems(items.toTypedArray()) { dialog, which ->
-                actions.getOrNull(which)?.invoke()
-                dialog.dismiss()
-            }
+            .setView(content)
+            .setPositiveButton("Close", null)
             .show()
+    }
+
+    private fun showToast(msg: String) {
+        android.widget.Toast.makeText(this, msg, android.widget.Toast.LENGTH_SHORT).show()
     }
 
     override fun onStop() {

@@ -2,6 +2,7 @@ package com.tvstreamnode.tv
 
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
+import android.view.KeyEvent
 import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
@@ -10,6 +11,7 @@ import android.widget.TextView
 import androidx.leanback.widget.Presenter
 import com.tvstreamnode.tv.data.model.Channel
 import com.tvstreamnode.tv.data.model.EpgEvent
+import com.tvstreamnode.tv.util.ListManager
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -17,6 +19,7 @@ import java.util.Locale
 class ChannelCardPresenter : Presenter() {
 
     var onClickListener: ((Channel, EpgEvent?) -> Unit)? = null
+    var onDownListener: ((Channel) -> Unit)? = null
 
     override fun onCreateViewHolder(parent: ViewGroup): ViewHolder {
         val density = parent.resources.displayMetrics.density
@@ -114,6 +117,37 @@ class ChannelCardPresenter : Presenter() {
         }
         card.addView(descText)
 
+        // Spacer pushes list tags to bottom
+        card.addView(View(parent.context).apply {
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f
+            )
+        })
+
+        // Thin separator above list tags
+        card.addView(View(parent.context).apply {
+            setBackgroundColor(Color.parseColor("#444444"))
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, (1 * density).toInt()
+            ).apply {
+                topMargin = (6 * density).toInt()
+                bottomMargin = (4 * density).toInt()
+                leftMargin = (4 * density).toInt()
+                rightMargin = (4 * density).toInt()
+            }
+        })
+
+        // List tags
+        val listTags = TextView(parent.context).apply {
+            id = 6
+            tag = "list_tags"
+            textSize = 10f
+            setTextColor(Color.parseColor("#BBBBBB"))
+            maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.END
+        }
+        card.addView(listTags)
+
         // Focus highlight
         val focusBg = GradientDrawable().apply {
             setColor(Color.parseColor("#2A2A2A"))
@@ -188,9 +222,26 @@ class ChannelCardPresenter : Presenter() {
             }
         }
 
+        // List tags
+        ListManager.init(card.context)
+        val listTags = card.findViewWithTag("list_tags") as? TextView
+        listTags?.let { tv ->
+            val names = ListManager.getListNamesForChannel(channel.uuid)
+            tv.text = if (names.isNotEmpty()) names.joinToString(" · ") else ""
+            tv.visibility = if (names.isNotEmpty()) ViewGroup.VISIBLE else ViewGroup.GONE
+        }
+
         // Click handler
         card.setOnClickListener {
             onClickListener?.invoke(channel, event)
+        }
+
+        // Down handler — show list menu
+        card.setOnKeyListener { _, keyCode, event ->
+            if (event.action == KeyEvent.ACTION_DOWN && keyCode == KeyEvent.KEYCODE_DPAD_DOWN) {
+                onDownListener?.invoke(channel)
+                true
+            } else false
         }
     }
 
