@@ -200,6 +200,11 @@ class PlaybackActivity : androidx.fragment.app.FragmentActivity() {
             })
         }
         playerView?.player = player
+        playerView?.subtitleView?.apply {
+            visibility = View.VISIBLE
+            setFractionalTextSize(androidx.media3.ui.SubtitleView.DEFAULT_TEXT_SIZE_FRACTION)
+            setApplyEmbeddedStyles(true)
+        }
 
         // ── Load channel list + cache EPG + initial play ──
         lifecycleScope.launch {
@@ -208,7 +213,8 @@ class PlaybackActivity : androidx.fragment.app.FragmentActivity() {
                 try { ChannelRepository(api).getChannels() }
                 catch (_: Exception) { Result.failure(Exception("")) }
             }
-            channels = chResult.getOrNull() ?: emptyList()
+            channels = (chResult.getOrNull() ?: emptyList())
+                .sortedBy { it.name?.lowercase() ?: "" }
             currentChannelIndex = channels.indexOfFirst { it.uuid == channelUuid }
 
             // Pre-load current EPG (mode=now) for instant overlay on channel switch
@@ -251,14 +257,19 @@ class PlaybackActivity : androidx.fragment.app.FragmentActivity() {
         p.prepare()
         p.playWhenReady = true
 
-        // Auto-enable subtitles if available
+        // Auto-enable subtitles if available and currently disabled
         val autoSub = object : Player.Listener {
             override fun onTracksChanged(tracks: androidx.media3.common.Tracks) {
                 p.removeListener(this)
                 for (group in tracks.groups) {
-                    if (group.type == C.TRACK_TYPE_TEXT && group.length > 0 && !group.isSelected()) {
+                    if (group.type == C.TRACK_TYPE_TEXT && group.length > 0
+                        && p.trackSelectionParameters.disabledTrackTypes.contains(C.TRACK_TYPE_TEXT)) {
+                        val lang = group.getTrackFormat(0).language ?: "ita"
                         p.trackSelectionParameters = p.trackSelectionParameters
-                            .buildUpon().setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false).build()
+                            .buildUpon()
+                            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+                            .setPreferredTextLanguage(lang)
+                            .build()
                         break
                     }
                 }
@@ -447,6 +458,7 @@ class PlaybackActivity : androidx.fragment.app.FragmentActivity() {
         var currentAudio = ""
         var subtitleEnabled = false
         var subtitleCount = 0
+        var subtitleLang = ""
 
         for (group in tracks.groups) {
             when (group.type) {
@@ -460,8 +472,11 @@ class PlaybackActivity : androidx.fragment.app.FragmentActivity() {
                     }
                 }
                 C.TRACK_TYPE_TEXT -> {
-                    subtitleEnabled = group.length > 0 && group.isSelected()
+                    subtitleEnabled = !p.trackSelectionParameters.disabledTrackTypes.contains(C.TRACK_TYPE_TEXT)
                     subtitleCount = group.length
+                    if (group.length > 0) {
+                        subtitleLang = group.getTrackFormat(0).language ?: "unknown"
+                    }
                 }
             }
         }
@@ -510,6 +525,25 @@ class PlaybackActivity : androidx.fragment.app.FragmentActivity() {
                 setOnClickListener {
                     p.trackSelectionParameters = p.trackSelectionParameters
                         .buildUpon().setPreferredAudioLanguage(lang).build()
+                    (this.getChildAt(0) as? TextView)?.let { m ->
+                        m.text = "●"
+                        m.setTextColor(Color.parseColor("#1A73E8"))
+                    }
+                    (this.getChildAt(1) as? TextView)?.setTextColor(Color.WHITE)
+                    // Clear other audio rows only (skip subtitle row)
+                    val parent = this.parent as? LinearLayout
+                    parent?.let { pl ->
+                        for (i in 0 until pl.childCount) {
+                            val r = pl.getChildAt(i) as? LinearLayout ?: continue
+                            if (r == this) continue
+                            val marker = r.getChildAt(0) as? TextView ?: continue
+                            if (marker.text in listOf("●", "○")) {
+                                marker.text = "○"
+                                marker.setTextColor(Color.parseColor("#666666"))
+                                (r.getChildAt(1) as? TextView)?.setTextColor(Color.parseColor("#CCCCCC"))
+                            }
+                        }
+                    }
                     showToast("Audio: $label")
                 }
             }
@@ -557,23 +591,26 @@ class PlaybackActivity : androidx.fragment.app.FragmentActivity() {
                 }
                 setOnFocusChangeListener { v, hasFocus -> v.background = if (hasFocus) fBg else nBg }
                 setOnClickListener {
+                    val currentState = !p.trackSelectionParameters.disabledTrackTypes.contains(C.TRACK_TYPE_TEXT)
+                    val newState = !currentState
                     p.trackSelectionParameters = p.trackSelectionParameters
-                        .buildUpon().setTrackTypeDisabled(C.TRACK_TYPE_TEXT, subtitleEnabled).build()
-                    showToast("Subtitles: ${if (!subtitleEnabled) "On" else "Off"}")
+                        .buildUpon().setTrackTypeDisabled(C.TRACK_TYPE_TEXT, currentState).build()
+                    (this.getChildAt(0) as? TextView)?.let { m ->
+                        m.text = if (newState) "☑" else "☐"
+                        m.setTextColor(if (newState) Color.parseColor("#1A73E8") else Color.parseColor("#666666"))
+                    }
+                    showToast("Subtitles ${if (newState) "On" else "Off"}")
                 }
             }
 
             subRow.addView(TextView(this).apply {
-                text = if (subtitleEnabled) "●" else "○"
+                text = if (subtitleEnabled) "☑" else "☐"
                 textSize = 20f
                 setTextColor(if (subtitleEnabled) Color.parseColor("#1A73E8") else Color.parseColor("#666666"))
-                layoutParams = LinearLayout.LayoutParams(
-                    (32 * density).toInt(),
-                    ViewGroup.LayoutParams.WRAP_CONTENT
-                )
+                layoutParams = LinearLayout.LayoutParams((36 * density).toInt(), ViewGroup.LayoutParams.WRAP_CONTENT)
             })
             subRow.addView(TextView(this).apply {
-                text = if (subtitleEnabled) "On" else "Off"
+                text = subtitleLang
                 textSize = 16f
                 setTextColor(Color.WHITE)
                 layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)

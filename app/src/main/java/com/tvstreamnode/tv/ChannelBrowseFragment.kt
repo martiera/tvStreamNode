@@ -98,9 +98,6 @@ class ChannelBrowseFragment : Fragment() {
                         if (bridge != null) horizontalGrid.setSelectedPosition(bridge.itemCount - 1)
                         true
                     } else false
-                } else if (event.action == KeyEvent.ACTION_DOWN && keyCode == KeyEvent.KEYCODE_DPAD_DOWN) {
-                    showCardListMenu()
-                    true
                 } else false
             }
         }
@@ -328,10 +325,16 @@ class ChannelBrowseFragment : Fragment() {
                 }
                 setOnFocusChangeListener { v, hasFocus -> v.background = if (hasFocus) focusBg else normalBg }
                 setOnClickListener {
-                    ListManager.toggleChannel(list.id, uuid, !isInList)
-                    val msg = if (!isInList) "Added to ${list.name}" else "Removed from ${list.name}"
+                    val clickedRow = this
+                    val currentState = ListManager.getAll().find { it.id == list.id }?.channelIds?.contains(uuid) ?: false
+                    val newState = !currentState
+                    ListManager.toggleChannel(list.id, uuid, newState)
+                    (clickedRow.getChildAt(0) as? TextView)?.let { marker ->
+                        marker.text = if (newState) "☑" else "☐"
+                        marker.setTextColor(if (newState) Color.parseColor("#1A73E8") else Color.parseColor("#666666"))
+                    }
+                    val msg = if (newState) "Added to ${list.name}" else "Removed from ${list.name}"
                     android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_SHORT).show()
-                    showCardListMenu()
                 }
             }
 
@@ -350,10 +353,19 @@ class ChannelBrowseFragment : Fragment() {
             content.addView(row)
         }
 
-        AlertDialog.Builder(requireContext())
+        val dialog = AlertDialog.Builder(requireContext())
             .setTitle("Lists — $chName")
             .setView(content)
             .setPositiveButton("Close", null)
-            .show()
+            .create()
+        dialog.setOnDismissListener {
+            val currentPos = horizontalGrid.selectedPosition
+            buildHeader()
+            populateGrid()
+            horizontalGrid.post {
+                horizontalGrid.setSelectedPosition(currentPos.coerceAtMost(sortedChannels.size - 1))
+            }
+        }
+        dialog.show()
     }
 }
