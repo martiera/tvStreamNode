@@ -29,6 +29,18 @@ class Preferences(context: Context) {
         get() = prefs.getString(KEY_LAST_CHANNEL_NAME, "") ?: ""
         set(value) = prefs.edit { putString(KEY_LAST_CHANNEL_NAME, value) }
 
+    var streamType: String
+        get() = prefs.getString(KEY_STREAM_TYPE, "auto") ?: "auto"
+        set(value) = prefs.edit { putString(KEY_STREAM_TYPE, value) }
+
+    var subtitleLanguage: String
+        get() = prefs.getString(KEY_SUBTITLE_LANGUAGE, "channel") ?: "channel"
+        set(value) = prefs.edit { putString(KEY_SUBTITLE_LANGUAGE, value) }
+
+    var streamProfile: String
+        get() = prefs.getString(KEY_STREAM_PROFILE, "") ?: ""
+        set(value) = prefs.edit { putString(KEY_STREAM_PROFILE, value) }
+
     val isConfigured: Boolean
         get() = serverUrl.isNotBlank()
 
@@ -49,5 +61,8 @@ class Preferences(context: Context) {
         private const val KEY_PASSWORD = "password"
         private const val KEY_LAST_CHANNEL_UUID = "last_channel_uuid"
         private const val KEY_LAST_CHANNEL_NAME = "last_channel_name"
+        private const val KEY_STREAM_TYPE = "stream_type"
+        private const val KEY_SUBTITLE_LANGUAGE = "subtitle_language"
+        private const val KEY_STREAM_PROFILE = "stream_profile"
     }
 }

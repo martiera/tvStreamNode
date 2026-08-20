@@ -18,13 +18,15 @@ object RetrofitClient {
         if (api == null || baseUrl != currentBaseUrl) {
             currentBaseUrl = baseUrl
 
-            val logging = HttpLoggingInterceptor().apply {
-                level = HttpLoggingInterceptor.Level.BASIC
-            }
-
             client = OkHttpClient.Builder()
                 .addInterceptor(AuthInterceptor(preferences))
-                .addInterceptor(logging)
+                .apply {
+                    if (com.tvstreamnode.tv.BuildConfig.DEBUG) {
+                        addInterceptor(HttpLoggingInterceptor().apply {
+                            level = HttpLoggingInterceptor.Level.BASIC
+                        })
+                    }
+                }
                 .connectTimeout(10, TimeUnit.SECONDS)
                 .readTimeout(30, TimeUnit.SECONDS)
                 .writeTimeout(30, TimeUnit.SECONDS)
@@ -40,8 +42,6 @@ object RetrofitClient {
         }
         return api!!
     }
-
-    fun getOkHttpClient(): OkHttpClient? = client
 
     fun reset() {
         api = null

@@ -10,6 +10,7 @@ import com.tvstreamnode.tv.data.model.Channel
 import com.tvstreamnode.tv.data.model.EpgEvent
 import com.tvstreamnode.tv.data.repository.ChannelRepository
 import com.tvstreamnode.tv.data.repository.EpgRepository
+import com.tvstreamnode.tv.util.DataCache
 import com.tvstreamnode.tv.util.Preferences
 import kotlinx.coroutines.launch
 
@@ -26,6 +27,10 @@ class ChannelBrowseViewModel(application: Application) : AndroidViewModel(applic
     private val api = RetrofitClient.getApi(prefs)
     private val channelRepo = ChannelRepository(api)
     private val epgRepo = EpgRepository(api)
+
+    init {
+        DataCache.init(application)
+    }
 
     private val _state = MutableLiveData(ChannelBrowseState())
     val state: LiveData<ChannelBrowseState> = _state
@@ -46,6 +51,17 @@ class ChannelBrowseViewModel(application: Application) : AndroidViewModel(applic
 
         _state.value = _state.value?.copy(isLoading = true, error = null)
 
+        // Emit disk-cached data immediately so cold starts show channels instantly
+        if (cacheChannels == null) {
+            DataCache.loadChannels()?.let { cached ->
+                _state.value = ChannelBrowseState(
+                    channels = cached,
+                    currentEvents = emptyMap(),
+                    isLoading = true
+                )
+            }
+        }
+
         viewModelScope.launch {
             val channelsResult = channelRepo.getChannels()
             val epgResult = epgRepo.getCurrentEvents()
@@ -59,6 +75,10 @@ class ChannelBrowseViewModel(application: Application) : AndroidViewModel(applic
                 epgResult.isFailure -> epgResult.exceptionOrNull()?.message
                 else -> null
             }
+
+            // Persist to disk for the next cold start
+            if (channels.isNotEmpty()) DataCache.saveChannels(channels)
+            if (events.isNotEmpty()) DataCache.saveEpg(events)
 
             cacheChannels = channels
             cacheEvents = currentByChannel

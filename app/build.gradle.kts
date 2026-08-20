@@ -45,6 +45,7 @@ dependencies {
     implementation(libs.media3.exoplayer)
     implementation(libs.media3.exoplayer.hls)
     implementation(libs.media3.ui)
+    implementation(libs.media3.datasource)
     implementation(libs.retrofit)
     implementation(libs.retrofit.converter.gson)
     implementation(libs.okhttp)
@@ -54,5 +55,4 @@ dependencies {
     implementation(libs.lifecycle.runtime.ktx)
     implementation(libs.preference.ktx)
     implementation(libs.gson)
-    implementation(libs.glide)
 }

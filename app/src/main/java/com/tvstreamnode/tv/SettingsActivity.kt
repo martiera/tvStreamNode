@@ -33,6 +33,9 @@ class SettingsActivity : androidx.fragment.app.FragmentActivity() {
         private lateinit var usernameAction: GuidedAction
         private lateinit var passwordAction: GuidedAction
         private lateinit var testAction: GuidedAction
+        private lateinit var streamTypeAction: GuidedAction
+        private lateinit var subtitleLangAction: GuidedAction
+        private lateinit var streamProfileAction: GuidedAction
 
         override fun onCreateGuidance(savedInstanceState: Bundle?): GuidanceStylist.Guidance {
             val connectionError = requireActivity().intent?.getBooleanExtra("connection_error", false) ?: false
@@ -73,9 +76,30 @@ class SettingsActivity : androidx.fragment.app.FragmentActivity() {
                 .title(getString(R.string.test_connection))
                 .build()
 
+            streamTypeAction = GuidedAction.Builder(requireContext())
+                .id(ACTION_STREAM_TYPE)
+                .title(getString(R.string.stream_type))
+                .description(streamTypeLabel(prefs.streamType))
+                .build()
+
+            subtitleLangAction = GuidedAction.Builder(requireContext())
+                .id(ACTION_SUBTITLE_LANG)
+                .title(getString(R.string.subtitle_language))
+                .description(subtitleLangLabel(prefs.subtitleLanguage))
+                .build()
+
+            streamProfileAction = GuidedAction.Builder(requireContext())
+                .id(ACTION_STREAM_PROFILE)
+                .title(getString(R.string.stream_profile))
+                .description(prefs.streamProfile.ifBlank { getString(R.string.stream_profile_summary) })
+                .build()
+
             actions.add(urlAction)
             actions.add(usernameAction)
             actions.add(passwordAction)
+            actions.add(streamTypeAction)
+            actions.add(subtitleLangAction)
+            actions.add(streamProfileAction)
             actions.add(testAction)
         }
 
@@ -112,7 +136,49 @@ class SettingsActivity : androidx.fragment.app.FragmentActivity() {
                     RetrofitClient.reset()
                     testConnection()
                 }
+                ACTION_STREAM_TYPE -> {
+                    val next = when (prefs.streamType) {
+                        "auto" -> "ts"
+                        "ts" -> "hls"
+                        else -> "auto"
+                    }
+                    prefs.streamType = next
+                    streamTypeAction.description = streamTypeLabel(next)
+                    notifyActionChanged(ACTION_STREAM_TYPE.toInt())
+                }
+                ACTION_SUBTITLE_LANG -> {
+                    val next = when (prefs.subtitleLanguage) {
+                        "channel" -> "system"
+                        "system" -> "off"
+                        else -> "channel"
+                    }
+                    prefs.subtitleLanguage = next
+                    subtitleLangAction.description = subtitleLangLabel(next)
+                    notifyActionChanged(ACTION_SUBTITLE_LANG.toInt())
+                }
+                ACTION_STREAM_PROFILE -> showEditDialog(
+                    getString(R.string.stream_profile),
+                    prefs.streamProfile,
+                    InputType.TYPE_CLASS_TEXT
+                ) { value ->
+                    prefs.streamProfile = value.trim()
+                    streamProfileAction.description =
+                        prefs.streamProfile.ifBlank { getString(R.string.stream_profile_summary) }
+                    notifyActionChanged(ACTION_STREAM_PROFILE.toInt())
+                }
             }
+        }
+
+        private fun streamTypeLabel(value: String): String = when (value) {
+            "hls" -> "HLS"
+            "ts" -> "MPEG-TS"
+            else -> "Auto (TS → pass profile)"
+        }
+
+        private fun subtitleLangLabel(value: String): String = when (value) {
+            "system" -> "System language"
+            "off" -> "Off"
+            else -> "Channel default"
         }
 
         private fun showEditDialog(title: String, currentValue: String, inputType: Int, onSave: (String) -> Unit) {
@@ -178,6 +244,9 @@ class SettingsActivity : androidx.fragment.app.FragmentActivity() {
             private const val ACTION_USERNAME = 2L
             private const val ACTION_PASSWORD = 3L
             private const val ACTION_TEST = 4L
+            private const val ACTION_STREAM_TYPE = 5L
+            private const val ACTION_SUBTITLE_LANG = 6L
+            private const val ACTION_STREAM_PROFILE = 7L
         }
     }
 }

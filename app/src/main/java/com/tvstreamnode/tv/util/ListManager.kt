@@ -12,7 +12,7 @@ object ListManager {
     private var prefs: android.content.SharedPreferences? = null
 
     fun init(context: Context) {
-        prefs = context.getSharedPreferences("tvstreamnode", Context.MODE_PRIVATE)
+        prefs = context.applicationContext.getSharedPreferences("tvstreamnode", Context.MODE_PRIVATE)
     }
 
     fun getAll(): List<ChannelList> {

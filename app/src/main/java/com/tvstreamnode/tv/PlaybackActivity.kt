@@ -14,6 +14,7 @@ import android.view.animation.AlphaAnimation
 import android.view.animation.TranslateAnimation
 import android.widget.FrameLayout
 import android.widget.LinearLayout
+import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
 import androidx.lifecycle.lifecycleScope
@@ -21,10 +22,13 @@ import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.common.PlaybackException
+import androidx.media3.common.Tracks
+import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.hls.HlsMediaSource
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
+import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.ui.PlayerView
 import com.tvstreamnode.tv.data.api.RetrofitClient
 import com.tvstreamnode.tv.data.model.Channel
@@ -32,6 +36,7 @@ import com.tvstreamnode.tv.data.model.EpgEvent
 import com.tvstreamnode.tv.data.repository.ChannelRepository
 import com.tvstreamnode.tv.data.repository.EpgRepository
 import com.tvstreamnode.tv.util.EpgCache
+import com.tvstreamnode.tv.util.DataCache
 import com.tvstreamnode.tv.util.ListManager
 import com.tvstreamnode.tv.util.Preferences
 import kotlinx.coroutines.Dispatchers
@@ -46,10 +51,25 @@ class PlaybackActivity : androidx.fragment.app.FragmentActivity() {
 
     private var player: ExoPlayer? = null
     private var playerView: PlayerView? = null
-    private var fallbackTried = false
     private var dataSourceFactory: DefaultHttpDataSource.Factory? = null
     private var currentUrl: String = ""
     private var prefs: Preferences? = null
+    private var autoSubtitleListener: Player.Listener? = null
+    private var errorRetries = 0
+    private var currentUuid: String = ""
+    private var streamType: String = "auto"
+    private var subtitleLanguage: String = "channel"
+    private lateinit var loadingOverlay: LinearLayout
+    private var audioFallbackTried = false
+    private var usingAudioFallback = false
+
+    companion object {
+        // Server-side profile: video+subs pass through, MP2/AC-3 audio transcoded to
+        // Vorbis in Matroska. tvheadend's webtv-aac emits AAC-LD which Fire TV's FDK
+        // decoder rejects (AAC_DEC_UNSUPPORTED_FORMAT / UNSUPPORTED_ER); Vorbis is
+        // decoded by the device's software Vorbis decoder.
+        private const val AUDIO_FALLBACK_PROFILE = "audio-vorbis"
+    }
 
     private var channels: List<Channel> = emptyList()
     private var currentChannelIndex: Int = -1
@@ -75,6 +95,8 @@ class PlaybackActivity : androidx.fragment.app.FragmentActivity() {
         prefs = Preferences(this)
         prefs!!.lastChannelUuid = channelUuid
         prefs!!.lastChannelName = intent.getStringExtra("channel_name") ?: ""
+        streamType = prefs!!.streamType
+        subtitleLanguage = prefs!!.subtitleLanguage
 
         val authHeader = Credentials.basic(prefs!!.username, prefs!!.password)
         dataSourceFactory = DefaultHttpDataSource.Factory()
@@ -177,25 +199,69 @@ class PlaybackActivity : androidx.fragment.app.FragmentActivity() {
         overlay.addView(overlayChannelTime)
         root.addView(overlay)
 
+        // ── Loading / buffering overlay ──
+        loadingOverlay = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            visibility = View.GONE
+            setBackgroundColor(Color.parseColor("#99000000"))
+            layoutParams = FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
+        }
+        loadingOverlay.addView(ProgressBar(this).apply {
+            layoutParams = LinearLayout.LayoutParams(
+                (48 * resources.displayMetrics.density).toInt(),
+                (48 * resources.displayMetrics.density).toInt()
+            )
+        })
+        loadingOverlay.addView(TextView(this).apply {
+            text = "Loading…"
+            textSize = 18f
+            setTextColor(Color.WHITE)
+            gravity = Gravity.CENTER
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { topMargin = (12 * resources.displayMetrics.density).toInt() }
+        })
+        root.addView(loadingOverlay)
+
         setContentView(root)
 
         // ── Player setup ──
-        player = ExoPlayer.Builder(this).build().apply {
+        // Live-TV zapping tuning: start playback after ~1s buffered (default 2.5s)
+        // for quick channel switches; 15–30s ceiling keeps playback stable.
+        val loadControl = DefaultLoadControl.Builder()
+            .setBufferDurationsMs(
+                /* minBufferMs = */ 15_000,
+                /* maxBufferMs = */ 30_000,
+                /* bufferForPlaybackMs = */ 1_000,
+                /* bufferForPlaybackAfterRebufferMs = */ 2_000
+            )
+            .setPrioritizeTimeOverSizeThresholds(true)
+            .build()
+        player = ExoPlayer.Builder(this)
+            .setLoadControl(loadControl)
+            .build().apply {
             playWhenReady = true
             addListener(object : Player.Listener {
                 override fun onPlaybackStateChanged(playbackState: Int) {
-                    if (playbackState == Player.STATE_ENDED) finish()
+                    when (playbackState) {
+                        Player.STATE_READY -> {
+                            loadingOverlay.visibility = View.GONE
+                            maybeFallbackForAudio()
+                        }
+                        Player.STATE_ENDED -> handleStreamFailure()
+                        else -> if (playWhenReady) loadingOverlay.visibility = View.VISIBLE
+                    }
                 }
                 override fun onPlayerError(error: PlaybackException) {
-                    if (!fallbackTried) {
-                        fallbackTried = true
-                        val hlsUrl = "$currentUrl/hls"
-                        val hlsSource = HlsMediaSource.Factory(dataSourceFactory!!)
-                            .createMediaSource(MediaItem.fromUri(hlsUrl))
-                        setMediaSource(hlsSource, true)
-                        prepare()
-                        playWhenReady = true
-                    }
+                    handleStreamFailure()
+                }
+                override fun onTracksChanged(tracks: Tracks) {
+                    maybeFallbackForAudio()
                 }
             })
         }
@@ -206,28 +272,42 @@ class PlaybackActivity : androidx.fragment.app.FragmentActivity() {
             setApplyEmbeddedStyles(true)
         }
 
-        // ── Load channel list + cache EPG + initial play ──
+        // ── Instant tune-in: start playback immediately ──
+        DataCache.init(this)
+        // Warm caches from disk (channel list for zapping, EPG for the overlay)
+        DataCache.loadChannels()?.let { cached ->
+            channels = cached.sortedBy { it.name?.lowercase() ?: "" }
+            currentChannelIndex = channels.indexOfFirst { it.uuid == channelUuid }
+        }
+        DataCache.loadEpg()?.let { EpgCache.put(it) }
+        playChannel(channelUuid)
+
+        // ── Refresh channel list + EPG from network in the background ──
         lifecycleScope.launch {
             val api = RetrofitClient.getApi(prefs!!)
             val chResult = withContext(Dispatchers.IO) {
                 try { ChannelRepository(api).getChannels() }
                 catch (_: Exception) { Result.failure(Exception("")) }
             }
-            channels = (chResult.getOrNull() ?: emptyList())
-                .sortedBy { it.name?.lowercase() ?: "" }
-            currentChannelIndex = channels.indexOfFirst { it.uuid == channelUuid }
+            chResult.getOrNull()?.let { fresh ->
+                DataCache.saveChannels(fresh)
+                channels = fresh.sortedBy { it.name?.lowercase() ?: "" }
+                currentChannelIndex = channels.indexOfFirst { it.uuid == currentUuid }
+                currentChannel = channels.find { it.uuid == currentUuid }
+            }
 
-            // Pre-load current EPG (mode=now) for instant overlay on channel switch
+            // Refresh current EPG (mode=now) for the overlay
             if (!EpgCache.isValid()) {
                 withContext(Dispatchers.IO) {
                     try {
                         val result = EpgRepository(api).getCurrentEvents()
-                        result.getOrNull()?.let { EpgCache.put(it) }
+                        result.getOrNull()?.let { events ->
+                            EpgCache.put(events)
+                            DataCache.saveEpg(events)
+                        }
                     } catch (_: Exception) { }
                 }
             }
-
-            playChannel(channelUuid)
         }
     }
 
@@ -235,58 +315,150 @@ class PlaybackActivity : androidx.fragment.app.FragmentActivity() {
         val pfs = prefs ?: return
 
         val ch = channels.find { it.uuid == uuid }
+        // Fall back to the intent-extra name until the channel list loads —
+        // keeps the overlay correct on instant tune-in.
+        val name = ch?.name ?: pfs.lastChannelName
         pfs.lastChannelUuid = uuid
-        pfs.lastChannelName = ch?.name ?: ""
-        title = ch?.name ?: "Channel"
-        currentIndex = currentChannelIndex
+        pfs.lastChannelName = name
+        title = name.ifBlank { "Channel" }
         currentChannel = ch
+        currentUuid = uuid
 
         // Show overlay IMMEDIATELY from cache (before stream switches)
         showOverlay(uuid)
 
         // Now switch the stream
-        val p = player ?: return
-        val dsf = dataSourceFactory ?: return
-        val baseUrl = pfs.serverUrl.trimEnd('/')
-        currentUrl = "$baseUrl/stream/channel/$uuid"
-        fallbackTried = false
-
-        val tsSource = ProgressiveMediaSource.Factory(dsf)
-            .createMediaSource(MediaItem.fromUri(currentUrl))
-        p.setMediaSource(tsSource, true)
-        p.prepare()
-        p.playWhenReady = true
+        errorRetries = 0
+        audioFallbackTried = false
+        usingAudioFallback = false
+        prepareSource(streamModes().first())
 
         // Auto-enable subtitles if available and currently disabled
+        val p = player ?: return
+        autoSubtitleListener?.let { p.removeListener(it) }
         val autoSub = object : Player.Listener {
             override fun onTracksChanged(tracks: androidx.media3.common.Tracks) {
-                p.removeListener(this)
-                for (group in tracks.groups) {
-                    if (group.type == C.TRACK_TYPE_TEXT && group.length > 0
-                        && p.trackSelectionParameters.disabledTrackTypes.contains(C.TRACK_TYPE_TEXT)) {
-                        val lang = group.getTrackFormat(0).language ?: "ita"
+                val textGroups = tracks.groups.filter { it.type == C.TRACK_TYPE_TEXT && it.length > 0 }
+                if (subtitleLanguage == "off") {
+                    if (!p.trackSelectionParameters.disabledTrackTypes.contains(C.TRACK_TYPE_TEXT)) {
                         p.trackSelectionParameters = p.trackSelectionParameters
-                            .buildUpon()
-                            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
-                            .setPreferredTextLanguage(lang)
-                            .build()
-                        break
+                            .buildUpon().setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true).build()
                     }
+                    return
                 }
+                if (textGroups.isEmpty()) return
+                // Text is selected by default in media3's DefaultTrackSelector only when a
+                // preferred text language is set; otherwise the DVB/CEA subtitle track stays
+                // unselected and nothing renders. Force a language preference here so the
+                // subtitle track actually gets picked.
+                val lang = when (subtitleLanguage) {
+                    "system" -> Locale.getDefault().language
+                    else -> textGroups.first().getTrackFormat(0).language
+                        ?: Locale.getDefault().language
+                }
+                val params = p.trackSelectionParameters
+                val textDisabled = params.disabledTrackTypes.contains(C.TRACK_TYPE_TEXT)
+                val preferredMatches = params.preferredTextLanguages.any { it.equals(lang, true) }
+                if (!textDisabled && preferredMatches) return
+                p.trackSelectionParameters = params
+                    .buildUpon()
+                    .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+                    .setPreferredTextLanguage(lang)
+                    .build()
             }
         }
+        autoSubtitleListener = autoSub
         p.addListener(autoSub)
     }
 
+    private fun streamModes(): List<String> = when (streamType) {
+        "hls" -> listOf("hls")
+        else -> listOf("ts", "ts_pass")
+    }
+
+    private fun prepareSource(mode: String, forcedProfile: String? = null) {
+        val p = player ?: return
+        val dsf = dataSourceFactory ?: return
+        val uuid = currentUuid.ifBlank { return }
+        val baseUrl = prefs?.serverUrl?.trimEnd('/') ?: return
+        val profile = forcedProfile ?: prefs?.streamProfile?.takeIf { it.isNotBlank() }
+
+        var url = "$baseUrl/stream/channel/$uuid"
+        if (mode == "hls") url = "$url/hls"
+        // An explicit stream profile (e.g. one that transcodes audio to AAC) overrides
+        // the built-in ?profile=pass fallback — useful for channels whose audio codec
+        // the device can't decode (MP2/AC-3 on older TVs).
+        if (profile != null) url = "$url?profile=${java.net.URLEncoder.encode(profile, "UTF-8")}"
+        else if (mode == "ts_pass") url = "$url?profile=pass"
+        currentUrl = url
+
+        val source = if (mode == "hls") {
+            HlsMediaSource.Factory(dsf).createMediaSource(MediaItem.fromUri(url))
+        } else {
+            ProgressiveMediaSource.Factory(dsf).createMediaSource(MediaItem.fromUri(url))
+        }
+        p.setMediaSource(source, true)
+        p.prepare()
+        p.playWhenReady = true
+    }
+
+    /**
+     * Some channels broadcast audio in a codec the device cannot decode (e.g. MP2 on
+     * Fire TV / older Bravia). ExoPlayer then plays video with the audio track left
+     * unselected. Detect that and transparently switch to the server-side
+     * "audio-aac" profile, which passes video/subs through untouched and transcodes
+     * only the audio to AAC.
+     */
+    private fun maybeFallbackForAudio() {
+        val p = player ?: return
+        if (audioFallbackTried || usingAudioFallback) return
+        if (errorRetries != 0) return
+        if (!prefs?.streamProfile.isNullOrBlank()) return
+        val groups = p.currentTracks.groups
+        val hasAudio = groups.any { it.type == C.TRACK_TYPE_AUDIO }
+        val audioSelected = groups.any { it.type == C.TRACK_TYPE_AUDIO && it.isSelected }
+        if (hasAudio && !audioSelected) {
+            audioFallbackTried = true
+            usingAudioFallback = true
+            showToast("Using compatible audio stream…")
+            prepareSource("ts", forcedProfile = AUDIO_FALLBACK_PROFILE)
+        }
+    }
+
+    private fun handleStreamFailure() {
+        // If the compatible-audio profile itself failed, revert to the raw stream
+        if (usingAudioFallback) {
+            usingAudioFallback = false
+            prepareSource("ts")
+            return
+        }
+        val modes = streamModes()
+        if (errorRetries + 1 < modes.size) {
+            errorRetries++
+            prepareSource(modes[errorRetries])
+            showToast("Stream interrupted — retrying…")
+        } else {
+            currentChannel?.uuid?.let { showErrorDialog(it) }
+        }
+    }
+
+    private fun showErrorDialog(uuid: String) {
+        AlertDialog.Builder(this)
+            .setTitle("Stream error")
+            .setMessage("Unable to play this channel.")
+            .setPositiveButton("Retry") { _, _ -> playChannel(uuid) }
+            .setNegativeButton("Back") { _, _ -> finish() }
+            .show()
+    }
+
     private var currentChannel: Channel? = null
-    private var currentIndex: Int = -1
 
     private fun showOverlay(channelUuid: String) {
         val ev = EpgCache.get(channelUuid)
         val ch = currentChannel
         val sdf = SimpleDateFormat("HH:mm", Locale.getDefault())
 
-        channelBar.text = ch?.name ?: ""
+        channelBar.text = currentChannel?.name ?: prefs?.lastChannelName ?: ""
 
         if (ev != null) {
             overlayTitle.text = ev.title ?: ch?.name ?: ""
@@ -368,11 +540,15 @@ class PlaybackActivity : androidx.fragment.app.FragmentActivity() {
             handler.postDelayed(hideRunnable, 8000L)
         }
 
+        if (keyCode == KeyEvent.KEYCODE_MENU) {
+            showTrackMenu()
+            return true
+        }
         if (keyCode == KeyEvent.KEYCODE_CHANNEL_UP || keyCode == KeyEvent.KEYCODE_DPAD_UP) {
             if (channels.isNotEmpty()) {
                 val next = if (currentChannelIndex >= channels.size - 1) 0 else currentChannelIndex + 1
                 if (next != currentChannelIndex) {
-                    currentChannelIndex = next; currentIndex = next
+                    currentChannelIndex = next
                     currentChannel = channels[next]
                     playChannel(channels[next].uuid)
                 }
@@ -383,7 +559,7 @@ class PlaybackActivity : androidx.fragment.app.FragmentActivity() {
             if (channels.isNotEmpty()) {
                 val prev = if (currentChannelIndex <= 0) channels.size - 1 else currentChannelIndex - 1
                 if (prev != currentChannelIndex) {
-                    currentChannelIndex = prev; currentIndex = prev
+                    currentChannelIndex = prev
                     currentChannel = channels[prev]
                     playChannel(channels[prev].uuid)
                 }
@@ -450,15 +626,21 @@ class PlaybackActivity : androidx.fragment.app.FragmentActivity() {
             .show()
     }
 
+    private data class AudioTrackInfo(
+        val group: Tracks.Group,
+        val trackIndex: Int,
+        val lang: String,
+        val label: String,
+        val selected: Boolean
+    )
+
     private fun showTrackMenu() {
         val p = player ?: return
         val tracks = p.currentTracks
 
-        var audioTracks = mutableListOf<Pair<String, String>>()
-        var currentAudio = ""
+        val audioTracks = mutableListOf<AudioTrackInfo>()
+        val subtitleTracks = mutableListOf<AudioTrackInfo>()
         var subtitleEnabled = false
-        var subtitleCount = 0
-        var subtitleLang = ""
 
         for (group in tracks.groups) {
             when (group.type) {
@@ -466,22 +648,29 @@ class PlaybackActivity : androidx.fragment.app.FragmentActivity() {
                     for (i in 0 until group.length) {
                         val fmt = group.getTrackFormat(i)
                         val lang = fmt.language ?: "unknown"
-                        val label = fmt.label ?: lang
-                        audioTracks.add(lang to label)
-                        if (group.isSelected()) currentAudio = lang
+                        val codec = fmt.codecs ?: fmt.sampleMimeType?.substringAfter('/') ?: ""
+                        val label = fmt.label
+                            ?: if (fmt.language != null) lang
+                            else if (codec.isNotBlank()) "$codec (track ${i + 1})"
+                            else "Track ${i + 1}"
+                        audioTracks.add(AudioTrackInfo(group, i, lang, label, group.isTrackSelected(i)))
                     }
                 }
                 C.TRACK_TYPE_TEXT -> {
                     subtitleEnabled = !p.trackSelectionParameters.disabledTrackTypes.contains(C.TRACK_TYPE_TEXT)
-                    subtitleCount = group.length
-                    if (group.length > 0) {
-                        subtitleLang = group.getTrackFormat(0).language ?: "unknown"
+                    for (i in 0 until group.length) {
+                        val fmt = group.getTrackFormat(i)
+                        val lang = fmt.language ?: "unknown"
+                        val label = fmt.label
+                            ?: if (fmt.language != null) lang
+                            else "Subtitle ${i + 1}"
+                        subtitleTracks.add(AudioTrackInfo(group, i, lang, label, group.isTrackSelected(i)))
                     }
                 }
             }
         }
 
-        if (audioTracks.isEmpty() && subtitleCount == 0) {
+        if (audioTracks.isEmpty() && subtitleTracks.isEmpty()) {
             AlertDialog.Builder(this)
                 .setTitle("Playback Settings")
                 .setMessage("No alternate audio or subtitle tracks available")
@@ -509,8 +698,8 @@ class PlaybackActivity : androidx.fragment.app.FragmentActivity() {
         })
 
         // Audio track rows
-        for ((lang, label) in audioTracks) {
-            val selected = lang == currentAudio
+        for (track in audioTracks) {
+            val selected = track.selected
             val row = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
                 setPadding((8 * density).toInt(), (6 * density).toInt(), (8 * density).toInt(), (6 * density).toInt())
@@ -523,8 +712,12 @@ class PlaybackActivity : androidx.fragment.app.FragmentActivity() {
                 }
                 setOnFocusChangeListener { v, hasFocus -> v.background = if (hasFocus) fBg else nBg }
                 setOnClickListener {
+                    val override = TrackSelectionOverride(track.group.mediaTrackGroup, listOf(track.trackIndex))
                     p.trackSelectionParameters = p.trackSelectionParameters
-                        .buildUpon().setPreferredAudioLanguage(lang).build()
+                        .buildUpon()
+                        .clearOverridesOfType(C.TRACK_TYPE_AUDIO)
+                        .addOverride(override)
+                        .build()
                     (this.getChildAt(0) as? TextView)?.let { m ->
                         m.text = "●"
                         m.setTextColor(Color.parseColor("#1A73E8"))
@@ -544,7 +737,7 @@ class PlaybackActivity : androidx.fragment.app.FragmentActivity() {
                             }
                         }
                     }
-                    showToast("Audio: $label")
+                    showToast("Audio: ${track.label}")
                 }
             }
 
@@ -558,7 +751,7 @@ class PlaybackActivity : androidx.fragment.app.FragmentActivity() {
                 )
             })
             row.addView(TextView(this).apply {
-                text = label.replaceFirstChar { it.uppercase() }
+                text = track.label.replaceFirstChar { it.uppercase() }
                 textSize = 16f
                 setTextColor(if (selected) Color.WHITE else Color.parseColor("#CCCCCC"))
                 layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
@@ -567,7 +760,7 @@ class PlaybackActivity : androidx.fragment.app.FragmentActivity() {
         }
 
         // Subtitles section
-        if (subtitleCount > 0) {
+        if (subtitleTracks.isNotEmpty()) {
             content.addView(TextView(this).apply {
                 text = "Subtitles"
                 textSize = 18f
@@ -579,11 +772,70 @@ class PlaybackActivity : androidx.fragment.app.FragmentActivity() {
                 ).apply { topMargin = (12 * density).toInt(); bottomMargin = (8 * density).toInt() }
             })
 
-            val subRow = LinearLayout(this).apply {
+            fun updateSubtitleMarkers(selectedTag: Any) {
+                val parent = content
+                for (i in 0 until parent.childCount) {
+                    val r = parent.getChildAt(i) as? LinearLayout ?: continue
+                    val tag = r.tag ?: continue
+                    val marker = r.getChildAt(0) as? TextView ?: continue
+                    if (marker.text in listOf("☑", "☐")) {
+                        val active = tag == selectedTag
+                        marker.text = if (active) "☑" else "☐"
+                        marker.setTextColor(if (active) Color.parseColor("#1A73E8") else Color.parseColor("#666666"))
+                        (r.getChildAt(1) as? TextView)?.setTextColor(if (active) Color.WHITE else Color.parseColor("#CCCCCC"))
+                    }
+                }
+            }
+
+            for (track in subtitleTracks) {
+                val active = subtitleEnabled && track.selected
+                val row = LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    setPadding((8 * density).toInt(), (6 * density).toInt(), (8 * density).toInt(), (6 * density).toInt())
+                    isFocusable = true
+                    isClickable = true
+                    tag = "subtitle:${System.identityHashCode(track.group)}:${track.trackIndex}"
+                    val nBg = GradientDrawable().apply { setColor(Color.TRANSPARENT) }
+                    val fBg = GradientDrawable().apply {
+                        setColor(Color.parseColor("#2A2A2A"))
+                        setStroke(2, Color.parseColor("#1A73E8"))
+                    }
+                    setOnFocusChangeListener { v, hasFocus -> v.background = if (hasFocus) fBg else nBg }
+                    setOnClickListener {
+                        val override = TrackSelectionOverride(track.group.mediaTrackGroup, listOf(track.trackIndex))
+                        p.trackSelectionParameters = p.trackSelectionParameters
+                            .buildUpon()
+                            .clearOverridesOfType(C.TRACK_TYPE_TEXT)
+                            .addOverride(override)
+                            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+                            .setPreferredTextLanguage(track.lang)
+                            .build()
+                        updateSubtitleMarkers(this.tag)
+                        showToast("Subtitles: ${track.label.replaceFirstChar { it.uppercase() }}")
+                    }
+                }
+
+                row.addView(TextView(this).apply {
+                    text = if (active) "☑" else "☐"
+                    textSize = 20f
+                    setTextColor(if (active) Color.parseColor("#1A73E8") else Color.parseColor("#666666"))
+                    layoutParams = LinearLayout.LayoutParams((36 * density).toInt(), ViewGroup.LayoutParams.WRAP_CONTENT)
+                })
+                row.addView(TextView(this).apply {
+                    text = track.label.replaceFirstChar { it.uppercase() }
+                    textSize = 16f
+                    setTextColor(if (active) Color.WHITE else Color.parseColor("#CCCCCC"))
+                    layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                })
+                content.addView(row)
+            }
+
+            val offRow = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
                 setPadding((8 * density).toInt(), (6 * density).toInt(), (8 * density).toInt(), (6 * density).toInt())
                 isFocusable = true
                 isClickable = true
+                tag = "subtitle:off"
                 val nBg = GradientDrawable().apply { setColor(Color.TRANSPARENT) }
                 val fBg = GradientDrawable().apply {
                     setColor(Color.parseColor("#2A2A2A"))
@@ -591,31 +843,26 @@ class PlaybackActivity : androidx.fragment.app.FragmentActivity() {
                 }
                 setOnFocusChangeListener { v, hasFocus -> v.background = if (hasFocus) fBg else nBg }
                 setOnClickListener {
-                    val currentState = !p.trackSelectionParameters.disabledTrackTypes.contains(C.TRACK_TYPE_TEXT)
-                    val newState = !currentState
                     p.trackSelectionParameters = p.trackSelectionParameters
-                        .buildUpon().setTrackTypeDisabled(C.TRACK_TYPE_TEXT, currentState).build()
-                    (this.getChildAt(0) as? TextView)?.let { m ->
-                        m.text = if (newState) "☑" else "☐"
-                        m.setTextColor(if (newState) Color.parseColor("#1A73E8") else Color.parseColor("#666666"))
-                    }
-                    showToast("Subtitles ${if (newState) "On" else "Off"}")
+                        .buildUpon().setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true).build()
+                    updateSubtitleMarkers(this.tag)
+                    showToast("Subtitles Off")
                 }
             }
 
-            subRow.addView(TextView(this).apply {
-                text = if (subtitleEnabled) "☑" else "☐"
+            offRow.addView(TextView(this).apply {
+                text = if (subtitleEnabled) "☐" else "☑"
                 textSize = 20f
-                setTextColor(if (subtitleEnabled) Color.parseColor("#1A73E8") else Color.parseColor("#666666"))
+                setTextColor(if (subtitleEnabled) Color.parseColor("#666666") else Color.parseColor("#1A73E8"))
                 layoutParams = LinearLayout.LayoutParams((36 * density).toInt(), ViewGroup.LayoutParams.WRAP_CONTENT)
             })
-            subRow.addView(TextView(this).apply {
-                text = subtitleLang
+            offRow.addView(TextView(this).apply {
+                text = "Off"
                 textSize = 16f
-                setTextColor(Color.WHITE)
+                setTextColor(if (subtitleEnabled) Color.parseColor("#CCCCCC") else Color.WHITE)
                 layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
             })
-            content.addView(subRow)
+            content.addView(offRow)
         }
 
         AlertDialog.Builder(this)

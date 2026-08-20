@@ -36,15 +36,4 @@ class EpgRepository(
             Result.failure(e)
         }
     }
-
-    suspend fun getEpgInRangeForChannel(uuid: String, start: Long, end: Long): Result<List<EpgEvent>> {
-        val rawFilter = "[{\"field\":\"start\",\"type\":\"numeric\",\"value\":\"$start;$end\",\"comparison\":\"range\"}]"
-        val filter = URLEncoder.encode(rawFilter, "UTF-8")
-        return try {
-            val response = api.getEpgInRangeChannel(filter = filter, channelUuid = uuid)
-            Result.success(response.entries)
-        } catch (e: Exception) {
-            Result.failure(e)
-        }
-    }
 }
